@@ -54,3 +54,9 @@ Thumbs.db
 
 # Project specific
 delete/
+
+# Environment variables (API keys, secrets)
+.env
+.env.*
+*.env
+!.env.example

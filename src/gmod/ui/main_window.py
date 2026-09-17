@@ -2,11 +2,12 @@
 
 import logging
 from typing import Optional
+from datetime import datetime
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QDockWidget,
     QTabWidget, QStatusBar, QMenuBar, QMenu, QPushButton,
-    QLabel, QFrame, QVBoxLayout, QApplication
+    QLabel, QFrame, QVBoxLayout, QApplication, QMessageBox
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QAction, QIcon, QPalette, QColor
@@ -429,9 +430,41 @@ class MainWindow(QMainWindow):
         logger.info("Send message button clicked (stub)")
     
     def _on_gmod_button(self) -> None:
-        """Обработка кнопки GMod."""
-        self.status_bar.showMessage("Использовать GMod (заглушка)")
-        logger.info("GMod button clicked (stub)")
+        """Обработка кнопки GMod - вызов зарезервированного серверного endpoint."""
+        try:
+            # Зарезервированный endpoint для GMod сервера
+            gmod_endpoint = "https://api.gmod.example.com/v1/analyze"
+            
+            self.status_bar.showMessage("Подключение к GMod серверу...")
+            logger.info("Attempting to connect to GMod server endpoint")
+            
+            # Формируем запрос
+            payload = {
+                "action": "analyze",
+                "workspace_state": {
+                    "window_width": self.width(),
+                    "window_height": self.height(),
+                    "active_tab": self.central_tabs.tabText(self.central_tabs.currentIndex())
+                },
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Заглушка для демонстрации - в реальности будет работать
+            self.status_bar.showMessage("GMod сервер: endpoint зарезервирован (demo mode)")
+            logger.info(f"GMod server endpoint called: {gmod_endpoint} (demo mode)")
+            
+            # Показываем уведомление пользователю
+            QMessageBox.information(
+                self,
+                "GMod Сервер",
+                "GMod серверный endpoint зарезервирован.\n"
+                "В полноценной версии здесь будет осуществляться\n"
+                "интеграция с облачным сервисом GMod."
+            )
+            
+        except Exception as e:
+            self.status_bar.showMessage(f"GMod: ошибка - {str(e)}")
+            logger.error(f"GMod endpoint error: {e}")
     
     def _on_reset_workspace(self) -> None:
         """Обработка сброса рабочей области."""
