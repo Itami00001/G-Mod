@@ -1,0 +1,72 @@
+# Конфигурация GMod
+
+app:
+  name: "GMod"
+  version: "0.1.0"
+  theme: "dark"  # dark, light, system
+  language: "ru"
+  auto_save: true
+  auto_update: false
+
+ui:
+  window_width: 1200
+  window_height: 800
+  left_dock_width: 250
+  right_dock_width: 300
+  font_family: "Segoe UI"
+  font_size: 10
+
+database:
+  path: "data/gmod.db"
+  max_size_mb: 100
+  auto_cleanup: true
+
+llm:
+  providers:
+    - name: "ollama"
+      enabled: true
+      url: "http://localhost:11434"
+      api_key: ""
+    - name: "groq"
+      enabled: false
+      api_key: ""
+    - name: "gemini"
+      enabled: false
+      api_key: ""
+  
+  default_provider: "ollama"
+  message_limit: 7
+  temperature: 0.7
+  max_tokens: 2000
+
+analysis:
+  enabled_languages:
+    - python
+    - javascript
+    - typescript
+    - java
+  
+  depth: "full"  # diff, full
+  unit: "file"  # file, function, class, module
+  
+  metrics:
+    cyclomatic_complexity:
+      enabled: true
+      weight: 1.0
+      threshold: 10
+    cognitive_complexity:
+      enabled: true
+      weight: 0.8
+      threshold: 15
+    maintainability_index:
+      enabled: true
+      weight: 1.0
+      threshold: 50
+
+logging:
+  level: "INFO"
+  file: "logs/gmod.log"
+
+notifications:
+  enabled: true
+  sound: false
