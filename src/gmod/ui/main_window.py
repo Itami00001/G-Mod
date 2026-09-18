@@ -111,7 +111,7 @@ class MainWindow(QMainWindow):
         
         # Секция "Анализ"
         analysis_section = self._create_collapsible_section("Анализ")
-        analysis_layout = analysis_section.findChild(QVBoxLayout, "section_layout")
+        analysis_layout = self._get_section_layout(analysis_section)
         
         metrics_btn = QPushButton("Метрики")
         metrics_btn.clicked.connect(lambda: self._switch_to_tab("Метрики"))
@@ -125,7 +125,7 @@ class MainWindow(QMainWindow):
         
         # Секция "Данные"
         data_section = self._create_collapsible_section("Данные")
-        data_layout = data_section.findChild(QVBoxLayout, "section_layout")
+        data_layout = self._get_section_layout(data_section)
         
         reports_btn = QPushButton("Отчёты")
         reports_btn.clicked.connect(lambda: self._switch_to_tab("Отчёты"))
@@ -139,7 +139,7 @@ class MainWindow(QMainWindow):
         
         # Секция "Проект"
         project_section = self._create_collapsible_section("Проект")
-        project_layout = project_section.findChild(QVBoxLayout, "section_layout")
+        project_layout = self._get_section_layout(project_section)
         
         overview_btn = QPushButton("Обзор проекта")
         overview_btn.clicked.connect(lambda: self._switch_to_tab("Обзор"))
@@ -149,7 +149,7 @@ class MainWindow(QMainWindow):
         
         # Секция "Система"
         system_section = self._create_collapsible_section("Система")
-        system_layout = system_section.findChild(QVBoxLayout, "section_layout")
+        system_layout = self._get_section_layout(system_section)
         
         settings_btn = QPushButton("Быстрые настройки")
         settings_btn.clicked.connect(lambda: self._switch_to_tab("Настройки"))
@@ -251,25 +251,29 @@ class MainWindow(QMainWindow):
                 background: #e0e0e0;
             }
         """)
-        header.clicked.connect(lambda checked: self._toggle_section(section, checked))
-        layout.addWidget(header)
         
-        # Контент секции
-        content_layout = QVBoxLayout()
+        # Контент-виджет секции (хранит кнопки)
+        content_widget = QWidget()
+        content_widget.setProperty("section_content", True)
+        content_layout = QVBoxLayout(content_widget)
         content_layout.setObjectName("section_layout")
         content_layout.setContentsMargins(5, 5, 5, 5)
-        layout.addLayout(content_layout)
+        
+        header.clicked.connect(lambda checked: content_widget.setVisible(checked))
+        
+        layout.addWidget(header)
+        layout.addWidget(content_widget)
         
         return section
     
-    def _toggle_section(self, section: QFrame, checked: bool) -> None:
-        """Переключение видимости секции."""
-        content_layout = section.findChild(QVBoxLayout, "section_layout")
-        if content_layout:
-            for i in range(content_layout.count()):
-                widget = content_layout.itemAt(i).widget()
-                if widget:
-                    widget.setVisible(checked)
+    def _get_section_layout(self, section: QFrame) -> Optional["QVBoxLayout"]:
+        """Получение layout секции."""
+        content_widget = section.findChild(QWidget, "", Qt.FindDirectChildrenOnly)
+        # Ищем виджет с нужным свойством
+        for child in section.findChildren(QWidget):
+            if child.property("section_content"):
+                return child.layout()
+        return None
     
     def _create_central_tabs(self) -> None:
         """Создание центральных вкладок."""
@@ -303,32 +307,48 @@ class MainWindow(QMainWindow):
     
     def _create_chat_tab(self) -> QWidget:
         """Создание вкладки чата."""
+        from PySide6.QtWidgets import QTextEdit, QComboBox, QScrollArea
+        
         chat_tab = QWidget()
         chat_layout = QVBoxLayout(chat_tab)
         
-        # Область истории диалога
-        chat_history = QLabel("AI: Привет! Загрузи репозиторий, чтобы начать.")
-        chat_history.setWordWrap(True)
-        chat_history.setStyleSheet("padding: 10px; background: #f5f5f5; border-radius: 5px;")
-        chat_layout.addWidget(chat_history, 1)
+        # Область истории диалога (скроллируемая)
+        self.chat_history = QTextEdit()
+        self.chat_history.setReadOnly(True)
+        self.chat_history.setPlaceholderText("История диалога появится здесь...")
+        self.chat_history.append("AI: Привет! Загрузи репозиторий, чтобы начать.")
+        chat_layout.addWidget(self.chat_history, 1)
         
-        # Область ввода
-        input_layout = QHBoxLayout()
+        # Поле ввода сообщения
+        self.chat_input = QTextEdit()
+        self.chat_input.setMaximumHeight(80)
+        self.chat_input.setPlaceholderText("Введите сообщение...")
+        chat_layout.addWidget(self.chat_input)
         
-        # Выбор провайдера
-        provider_label = QLabel("Провайдер:")
-        input_layout.addWidget(provider_label)
+        # Нижняя панель: провайдер + модель + отправить
+        input_controls = QHBoxLayout()
         
-        # Выбор модели
-        model_label = QLabel("Модель:")
-        input_layout.addWidget(model_label)
+        provider_label = QLabel("🤖 Агент:")
+        input_controls.addWidget(provider_label)
         
-        # Кнопка отправки
+        self.provider_combo = QComboBox()
+        self.provider_combo.addItems(["Ollama", "Groq", "Gemini"])
+        input_controls.addWidget(self.provider_combo)
+        
+        model_label = QLabel("🧠 Модель:")
+        input_controls.addWidget(model_label)
+        
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(["llama3.2:3b", "gemini-flash", "llama3-8b-8192"])
+        input_controls.addWidget(self.model_combo)
+        
+        input_controls.addStretch()
+        
         send_button = QPushButton("Отправить")
         send_button.clicked.connect(self._on_send_message)
-        input_layout.addWidget(send_button)
+        input_controls.addWidget(send_button)
         
-        chat_layout.addLayout(input_layout)
+        chat_layout.addLayout(input_controls)
         
         return chat_tab
     
@@ -426,6 +446,13 @@ class MainWindow(QMainWindow):
     
     def _on_send_message(self) -> None:
         """Обработка отправки сообщения."""
+        if hasattr(self, 'chat_input'):
+            text = self.chat_input.toPlainText().strip()
+            if text:
+                if hasattr(self, 'chat_history'):
+                    self.chat_history.append(f"\nВы: {text}")
+                    self.chat_history.append("AI: (обработка — заглушка)")
+                self.chat_input.clear()
         self.status_bar.showMessage("Отправка сообщения (заглушка)")
         logger.info("Send message button clicked (stub)")
     

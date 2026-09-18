@@ -157,21 +157,27 @@ class HalsteadDifficulty(BaseMetric):
         """Вычисление сложности Холстеда."""
         content = unit.content
         
-        # Операторы
+        # Уникальные операторы
         operators = set(re.findall(r'[+\-*/%=<>!&|^~?:;,.(){}\[\]]', content))
         operators.update(re.findall(r'\b(if|else|elif|for|while|try|except|finally|with|return|break|continue|pass|and|or|not|in|is|lambda|yield|await|async)\b', content))
         
-        # Операнды
+        # Уникальные операнды
         operands = set(re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', content))
         
-        n1 = len(operators)  # Уникальные операторы
-        n2 = len(operands)  # Уникальные операнды
+        # Общее число вхождений операндов (N2)
+        total_operands = len(re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', content))
+        total_operands += len(re.findall(r'\b\d+\b', content))
+        total_operands += len(re.findall(r'["\'][^"\']*["\']', content))
         
-        if n1 == 0 or n2 == 0:
+        n1 = len(operators)   # Уникальные операторы
+        n2 = max(len(operands), 1)  # Уникальные операнды (защита от деления на 0)
+        N2 = total_operands   # Всего операндов
+        
+        if n1 == 0:
             return 0.0
         
-        # Сложность
-        difficulty = (n1 / 2) * (n2 / n2)  # Упрощённая формула
+        # Корректная формула Холстеда: D = (n1/2) * (N2/n2)
+        difficulty = (n1 / 2) * (N2 / n2)
         
         return float(difficulty)
 

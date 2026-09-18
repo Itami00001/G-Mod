@@ -218,10 +218,7 @@ class GitParser(IGitParser):
     def _get_repo_path(self, repo_id: str) -> Optional[str]:
         """Получение пути репозитория из БД по ID."""
         try:
-            # Сохранение информации о репозитории при клонировании/открытии
-            # В реальной реализации здесь будет запрос к БД
-            # Пока возвращаем None для совместимости с существующим кодом
-            return None
+            return self.db.load_workspace_state(f"repo_{repo_id}_path")
         except Exception as e:
             logger.error(f"Error getting repo path: {e}")
             return None
