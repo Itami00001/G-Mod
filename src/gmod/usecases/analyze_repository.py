@@ -6,10 +6,10 @@ from typing import List, Optional, Dict
 from datetime import datetime
 
 from gmod.domain.entities import Repository, Commit, CodeUnit, MetricResult
-from gmod.infrastructure.git.git_parser import GitParser
+from gmod.domain.interfaces import IGitParser, ILanguageParser, IMetric
+from gmod.infrastructure.db.database import get_database
 from gmod.infrastructure.parsers.factory import ParserFactory
 from gmod.infrastructure.metrics.factory import MetricFactory
-from gmod.infrastructure.db.database import get_database
 
 logger = logging.getLogger(__name__)
 
@@ -17,15 +17,47 @@ logger = logging.getLogger(__name__)
 class AnalyzeRepositoryUseCase:
     """Use case для анализа репозитория."""
     
-    def __init__(self, diff_only: bool = False):
+    def __init__(
+        self,
+        diff_only: bool = False,
+        git_parser: Optional[IGitParser] = None,
+        parser_factory: Optional[ILanguageParser] = None,
+        metric_factory: Optional[IMetric] = None,
+    ):
         """Инициализация use case.
         
         Args:
             diff_only: Если True, анализирует только diff, иначе файл целиком
+            git_parser: Реализация IGitParser (если None, создаётся по умолчанию)
+            parser_factory: Фабрика парсеров (если None, используется ParserFactory)
+            metric_factory: Фабрика метрик (если None, используется MetricFactory)
         """
         self.diff_only = diff_only
-        self.git_parser = GitParser(diff_only=diff_only)
+        self._git_parser = git_parser
+        self._parser_factory = parser_factory
+        self._metric_factory = metric_factory
         self.db = get_database()
+    
+    @property
+    def git_parser(self) -> IGitParser:
+        if self._git_parser is None:
+            from gmod.infrastructure.git.git_parser import GitParser
+            self._git_parser = GitParser(diff_only=self.diff_only)
+        return self._git_parser
+    
+    @property
+    def parser_factory(self) -> ILanguageParser:
+        if self._parser_factory is None:
+            from gmod.infrastructure.parsers.factory import ParserFactory
+            self._parser_factory = ParserFactory()
+        return self._parser_factory
+    
+    @property
+    def metric_factory(self) -> IMetric:
+        if self._metric_factory is None:
+            from gmod.infrastructure.metrics.factory import MetricFactory
+            self._metric_factory = MetricFactory()
+        return self._metric_factory
     
     def execute(self, repository: Repository, commit_hash: Optional[str] = None) -> Dict:
         """Выполнение анализа репозитория.
@@ -37,13 +69,16 @@ class AnalyzeRepositoryUseCase:
         Returns:
             Словарь с результатами анализа
         """
-        logger.info(f"Starting analysis of repository: {repository.id}")
+        logger.info(f"[GIT] Starting analysis of repository: {repository.id} (path={repository.local_path})")
         
         # Сохранение информации о репозитории
+        logger.debug(f"[GIT] Saving repository info: {repository.id}")
         self.git_parser.save_repository_info(repository)
         
         # Получение коммитов
+        logger.debug(f"[GIT] Fetching commits for repo: {repository.id}")
         commits = self.git_parser.get_commits(repository.id, limit=100)
+        logger.info(f"[GIT] Retrieved {len(commits)} commits")
         
         # Определение коммита для анализа
         target_commit = commit_hash
@@ -51,19 +86,20 @@ class AnalyzeRepositoryUseCase:
             target_commit = commits[0].hash
         
         if not target_commit:
-            logger.warning("No commits found for analysis")
+            logger.warning("[GIT] No commits found for analysis")
             return {"status": "error", "message": "No commits found"}
         
-        logger.info(f"Analyzing commit: {target_commit}")
+        logger.info(f"[GIT] Analyzing commit: {target_commit}")
         
         # Получение изменённых файлов
+        logger.debug(f"[GIT] Getting changed files for commit: {target_commit}")
         changed_files = self._get_changed_files(repository, target_commit)
         
         if not changed_files:
-            logger.warning("No changed files found")
+            logger.warning("[GIT] No changed files found for commit")
             return {"status": "error", "message": "No changed files found"}
         
-        logger.info(f"Found {len(changed_files)} changed files")
+        logger.info(f"[GIT] Found {len(changed_files)} changed files: {changed_files}")
         
         # Анализ каждого файла
         results = {
@@ -78,6 +114,7 @@ class AnalyzeRepositoryUseCase:
         
         for file_path in changed_files:
             try:
+                logger.debug(f"[PARSE] Analyzing file: {file_path}")
                 file_result = self._analyze_file(repository, target_commit, file_path)
                 results["files_analyzed"] += 1
                 results["units_analyzed"] += file_result["units_analyzed"]
@@ -91,7 +128,7 @@ class AnalyzeRepositoryUseCase:
                 logger.error(error_msg)
                 results["errors"].append(error_msg)
         
-        logger.info(f"Analysis completed: {results['files_analyzed']} files, "
+        logger.info(f"[ANALYSIS] Completed: {results['files_analyzed']} files, "
                     f"{results['units_analyzed']} units, {results['metrics_computed']} metrics")
         
         return results
@@ -120,22 +157,24 @@ class AnalyzeRepositoryUseCase:
             
             # Убираем дубликаты и фильтруем по поддерживаемым языкам
             changed_files = list(set(changed_files))
+            logger.debug(f"[GIT] Raw changed files before filter: {changed_files}")
             changed_files = [f for f in changed_files if self._is_supported_file(f)]
+            logger.debug(f"[GIT] Supported changed files after filter: {changed_files}")
             
             return changed_files
             
         except Exception as e:
-            logger.error(f"Error getting changed files: {e}")
+            logger.error(f"[GIT] Error getting changed files: {e}")
             return []
     
     def _is_supported_file(self, file_path: str) -> bool:
         """Проверка, поддерживается ли файл."""
         # Определяем язык по расширению
         path = Path(file_path)
-        language = ParserFactory.detect_language(path)
+        language = self.parser_factory.detect_language(path)
         
         # Проверяем, есть ли парсер для этого языка
-        parser = ParserFactory.get_parser(language)
+        parser = self.parser_factory.get_parser(language)
         return parser is not None
     
     def _analyze_file(self, repository: Repository, commit_hash: str, file_path: str) -> Dict:
@@ -149,6 +188,7 @@ class AnalyzeRepositoryUseCase:
         
         try:
             # Получение diff файла
+            logger.debug(f"[GIT] Getting diff for file: {file_path}")
             file_diff = self.git_parser.get_file_diff(repository.id, commit_hash, file_path)
             
             if not file_diff:
@@ -161,27 +201,33 @@ class AnalyzeRepositoryUseCase:
                 result["errors"].append(f"No content available for {file_path}")
                 return result
             
+            logger.debug(f"[PARSE] File content length: {len(content)} chars, diff_only={self.diff_only}")
+            
             # Определение языка
             path = Path(file_path)
-            language = ParserFactory.detect_language(path)
+            language = self.parser_factory.detect_language(path)
+            logger.debug(f"[PARSE] Detected language: {language} for file: {file_path}")
             
             # Парсинг файла на единицы кода
-            units = ParserFactory.parse_file(path, content, language)
+            units = self.parser_factory.parse_file(path, content, language)
             
             if not units:
                 result["errors"].append(f"No code units found in {file_path}")
                 return result
             
-            logger.debug(f"Parsed {len(units)} code units from {file_path}")
+            logger.info(f"[PARSE] Parsed {len(units)} code units from {file_path}: {[f'{u.unit_type}:{u.name}' for u in units]}")
             
             # Получение коммитов для VCS метрик
             commits = self.git_parser.get_commits(repository.id, limit=100)
+            logger.debug(f"[GIT] Retrieved {len(commits)} commits for VCS metrics")
             
             # Вычисление метрик для каждой единицы кода
             for unit in units:
                 try:
                     # Вычисление всех метрик
-                    metrics = MetricFactory.compute_all_metrics(unit)
+                    logger.debug(f"[METRICS] Computing metrics for unit: {unit.unit_type}:{unit.name}")
+                    metrics = self.metric_factory.compute_all_metrics(unit)
+                    logger.debug(f"[METRICS] Computed {len(metrics)} metrics for {unit.name}")
                     
                     # Сохранение метрик в БД
                     for metric in metrics:
@@ -192,12 +238,12 @@ class AnalyzeRepositoryUseCase:
                     
                 except Exception as e:
                     error_msg = f"Error computing metrics for {unit.name} in {file_path}: {e}"
-                    logger.error(error_msg)
+                    logger.error(f"[METRICS] {error_msg}")
                     result["errors"].append(error_msg)
             
         except Exception as e:
             error_msg = f"Error analyzing file {file_path}: {e}"
-            logger.error(error_msg)
+            logger.error(f"[ANALYSIS] {error_msg}")
             result["errors"].append(error_msg)
         
         return result
@@ -216,10 +262,11 @@ class AnalyzeRepositoryUseCase:
             )
             
             if cached_value is not None:
-                logger.debug(f"Metric {metric.metric_name} for {metric.unit_name} already cached")
+                logger.debug(f"[DB] Metric {metric.metric_name} for {metric.unit_name} already cached (value={cached_value})")
                 return
             
             # Сохраняем в БД
+            logger.debug(f"[DB] Saving metric: {metric.metric_name}={metric.value} for {metric.unit_name} in {metric.file_path}")
             self.db.save_metric(
                 repo_id=repo_id,
                 commit_hash=commit_hash,
@@ -229,9 +276,10 @@ class AnalyzeRepositoryUseCase:
                 metric_name=metric.metric_name,
                 value=metric.value
             )
+            logger.debug(f"[DB] Metric saved successfully")
             
         except Exception as e:
-            logger.error(f"Error saving metric: {e}")
+            logger.error(f"[DB] Error saving metric {metric.metric_name}: {e}")
     
     def get_analysis_results(self, repo_id: str, commit_hash: Optional[str] = None) -> List[Dict]:
         """Получение результатов анализа из БД.

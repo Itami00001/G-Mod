@@ -1,10 +1,21 @@
 """Константы приложения."""
 
+import os
 from pathlib import Path
 
-# Пути
-DATA_DIR = Path("data")
-LOGS_DIR = Path("logs")
+
+def _get_appdata_dir() -> Path:
+    """Получение директории %APPDATA%\\GMod."""
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "GMod"
+    # Fallback для Linux/macOS или если APPDATA не задан
+    return Path.home() / ".gmod"
+
+
+# Пути (используют %APPDATA%\GMod)
+DATA_DIR = _get_appdata_dir()
+LOGS_DIR = DATA_DIR / "logs"
 CONFIG_FILE = DATA_DIR / "config.yaml"
 DATABASE_FILE = DATA_DIR / "gmod.db"
 

@@ -4,9 +4,10 @@ import logging
 from typing import Optional, Dict, Any
 
 try:
-    from litellm import completion
+    import litellm
     LITELLM_AVAILABLE = True
 except ImportError:
+    litellm = None  # type: ignore
     LITELLM_AVAILABLE = False
     logging.warning("litellm not available, Ollama provider will not work")
 
@@ -30,11 +31,13 @@ class OllamaProvider(BaseLLMProvider):
         self.model = config.get("model", "llama3.2:3b") if config else "llama3.2:3b"
         self._validate_config()
     
-    def _validate_config(self) -> bool:
-        """Валидация конфигурации."""
+    def _validate_config(self, required_keys: list = None) -> bool:
+        """Валидация конфигурации (совместима с BaseLLMProvider)."""
         if not self.url:
             logger.warning("Ollama URL not configured, using default")
             self.url = "http://localhost:11434"
+        if required_keys:
+            return super()._validate_config(required_keys)
         return True
     
     def generate(self, prompt: str, **kwargs) -> str:
@@ -51,13 +54,19 @@ class OllamaProvider(BaseLLMProvider):
             raise RuntimeError("litellm not available, cannot use Ollama provider")
         
         try:
-            response = completion(
+            # Извлекаем известные параметры, остальные пробрасываем как есть.
+            # (Прямой **kwargs после явных temperature/max_tokens давал бы
+            # TypeError при дублировании ключей.)
+            extra = dict(kwargs)
+            temperature = extra.pop("temperature", 0.7)
+            max_tokens = extra.pop("max_tokens", 2000)
+            response = litellm.completion(
                 model=f"ollama/{self.model}",
                 messages=[{"role": "user", "content": prompt}],
                 api_base=self.url,
-                temperature=kwargs.get("temperature", 0.7),
-                max_tokens=kwargs.get("max_tokens", 2000),
-                **kwargs
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **extra,
             )
             
             return response["choices"][0]["message"]["content"]
@@ -78,7 +87,6 @@ class OllamaProvider(BaseLLMProvider):
         except Exception as e:
             logger.warning(f"Ollama not available at {self.url}: {e}")
             return False
-    
     def get_available_models(self) -> list:
         """Получение списка доступных моделей."""
         if not self.is_available():

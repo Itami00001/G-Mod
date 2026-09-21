@@ -4,16 +4,16 @@ GMod — это инструмент для AI-анализа кода с виз
 
 ## Стек технологий
 
-- **Python 3.11+**
+- **Python 3.10+** (3.11+ рекомендуется; `qdarktheme` требует 3.11+ и пока отключён — тема ставится через `QPalette`)
 - **PySide6** — Qt фреймворк для GUI
 - **gitpython** — работа с Git репозиториями
-- **tree-sitter** — парсинг кода
+- **tree-sitter** — парсинг кода (если `tree-sitter-python` не установлен — работает regex-fallback)
 - **litellm** — работа с LLM провайдерами
 - **SQLite** — хранение данных
 - **pyqtgraph** — визуализация графов
 - **networkx** — работа с графами
 - **pydantic** — валидация данных
-- **qdarktheme** — тёмная тема для Qt
+- **qdarktheme** — тёмная тема для Qt (опционально, только Python 3.11+)
 
 ## Архитектура
 
@@ -144,11 +144,28 @@ logging:
 
 ## Сборка в .exe
 
-Для сборки используется PyInstaller:
+Для сборки используется PyInstaller, spec — `gmod.spec` в корне
+(включает `data/config.yaml`, `README.md`, `assets/icon.ico`,
+tree-sitter грамматики Python, hiddenimports слоёв Clean Architecture):
 
 ```bash
 pip install pyinstaller
 pyinstaller gmod.spec
+```
+
+Собранное приложение ищет `data/config.yaml` рядом с `.exe`
+(в dev-режиме — `data/` в корне проекта).
+
+### Инклюды в `gmod.spec`
+- `hiddenimports`: все слои `gmod.*`, `pyqtgraph`, `networkx`, `tree_sitter`, `tree_sitter_python`, `git`, `litellm`
+- `datas`: `data/config.yaml`, `README.md`, `assets/icon.ico`, tree-sitter grammar dir
+- `excludes`: тесты, линтеры, jupyter, numpy/pandas/scipy/matplotlib, tkinter
+- `icon`: `assets/icon.ico` (сгенерирован PIL)
+
+### Запуск собранного приложения
+```bash
+cd dist/GMod
+GMod.exe
 ```
 
 ## Планы развития

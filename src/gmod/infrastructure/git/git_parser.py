@@ -37,10 +37,10 @@ class GitParser(IGitParser):
             
             # Клонирование
             repo = Repo.clone_from(url, local_path)
-            
+
             # Получение информации о репозитории
             repo_name = local_path.name
-            default_branch = repo.active_branch.name
+            default_branch = self._get_default_branch(repo)
             
             # Создание сущности Repository
             repository = Repository(
@@ -68,10 +68,10 @@ class GitParser(IGitParser):
             
             # Открытие репозитория
             repo = Repo(local_path)
-            
+
             # Получение информации
             repo_name = local_path.name
-            default_branch = repo.active_branch.name
+            default_branch = self._get_default_branch(repo)
             
             # Попытка получить URL (если это клон)
             try:
@@ -215,6 +215,25 @@ class GitParser(IGitParser):
             logger.error(f"Error getting branches: {e}")
             raise
     
+    @staticmethod
+    def _get_default_branch(repo: Repo) -> str:
+        """Безопасное определение ветки по умолчанию.
+
+        repo.active_branch падает с TypeError на detached HEAD,
+        поэтому пробуем несколько стратегий и откатываемся к HEAD.
+        """
+        try:
+            return repo.active_branch.name
+        except (TypeError, ValueError, AttributeError):
+            pass
+        try:
+            branch = repo.git.rev_parse("--abbrev-ref", "HEAD").strip()
+            if branch and branch != "HEAD":
+                return branch
+        except Exception:
+            pass
+        return "HEAD"
+
     def _get_repo_path(self, repo_id: str) -> Optional[str]:
         """Получение пути репозитория из БД по ID."""
         try:

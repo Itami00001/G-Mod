@@ -41,11 +41,28 @@ class ArchaeologistResponse(AIResponse):
     @field_validator('performance_impact')
     @classmethod
     def validate_performance_impact(cls, v):
-        """Валидация влияния на производительность."""
-        valid_impacts = ["высокое", "среднее", "низкое", "неизвестно"]
-        if v.lower() not in valid_impacts:
-            raise ValueError(f'performance_impact must be one of {valid_impacts}')
-        return v.lower()
+        """Валидация влияния на производительность.
+
+        Промпт ARCHAEOLOGIST_ANALYSIS_PROMPT просит LLM отвечать
+        high/medium/low, поэтому принимаем и английские значения
+        и нормализуем их к русским каноническим.
+        """
+        normalized = str(v).strip().lower()
+        aliases = {
+            "high": "высокое",
+            "medium": "среднее",
+            "low": "низкое",
+            "unknown": "неизвестно",
+            "высокое": "высокое",
+            "среднее": "среднее",
+            "низкое": "низкое",
+            "неизвестно": "неизвестно",
+        }
+        if normalized not in aliases:
+            raise ValueError(
+                f'performance_impact must be one of {sorted(set(aliases))}'
+            )
+        return aliases[normalized]
 
 
 class SummaryResponse(BaseModel):

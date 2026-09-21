@@ -48,10 +48,6 @@ data/*.db
 data/*.db-shm
 data/*.db-wal
 
-# OS
-.DS_Store
-Thumbs.db
-
 # Project specific
 delete/
 
@@ -60,3 +56,16 @@ delete/
 .env.*
 *.env
 !.env.example
+
+# Build artifacts
+build/
+dist/
+installer_output/
+*.spec.bak
+
+# Data directories (runtime)
+data/logs/
+data/repos/
+data/*.db
+data/*.db-shm
+data/*.db-wal

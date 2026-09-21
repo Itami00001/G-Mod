@@ -4,9 +4,10 @@ import logging
 from typing import Optional, Dict, Any
 
 try:
-    from litellm import completion
+    import litellm
     LITELLM_AVAILABLE = True
 except ImportError:
+    litellm = None  # type: ignore
     LITELLM_AVAILABLE = False
     logging.warning("litellm not available, Gemini provider will not work")
 
@@ -48,13 +49,16 @@ class GeminiProvider(BaseLLMProvider):
             raise ValueError("Gemini API key not provided")
         
         try:
-            response = completion(
+            extra = dict(kwargs)
+            temperature = extra.pop("temperature", 0.7)
+            max_tokens = extra.pop("max_tokens", 2000)
+            response = litellm.completion(
                 model=f"gemini/{self.model}",
                 messages=[{"role": "user", "content": prompt}],
                 api_key=self.api_key,
-                temperature=kwargs.get("temperature", 0.7),
-                max_tokens=kwargs.get("max_tokens", 2000),
-                **kwargs
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **extra,
             )
             
             return response["choices"][0]["message"]["content"]
@@ -73,7 +77,7 @@ class GeminiProvider(BaseLLMProvider):
         
         try:
             # Пробуем простой запрос для проверки доступности
-            test_response = completion(
+            test_response = litellm.completion(
                 model=f"gemini/{self.model}",
                 messages=[{"role": "user", "content": "test"}],
                 api_key=self.api_key,

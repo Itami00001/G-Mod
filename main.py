@@ -23,16 +23,17 @@ logger = logging.getLogger(__name__)
 
 def main():
     """Главная функция приложения."""
-    # Создание необходимых директорий
+    # Создание необходимых директорий в %APPDATA%\GMod
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / "repos").mkdir(parents=True, exist_ok=True)
     
     logger.info("Starting GMod application")
     
     # Создание приложения Qt
     app = QApplication(sys.argv)
     app.setApplicationName("GMod")
-    app.setApplicationVersion("0.1.0")
+    app.setApplicationVersion("1.0.0")
     app.setOrganizationName("GMod Team")
     
     # Включение high-DPI scaling (современный подход)

@@ -7,9 +7,9 @@ from datetime import datetime
 
 from gmod.domain.entities import Repository, Commit
 from gmod.domain.schemas import ArchaeologistResponse, ErrorResponse
+from gmod.domain.interfaces import IGitParser
 from gmod.domain.prompts import ARCHAEOLOGIST_SYSTEM_PROMPT, ARCHAEOLOGIST_ANALYSIS_PROMPT
 from gmod.infrastructure.llm.session_manager import SessionManager
-from gmod.infrastructure.git.git_parser import GitParser
 from gmod.infrastructure.db.database import get_database
 from gmod.usecases.analyze_repository import AnalyzeRepositoryUseCase
 
@@ -19,26 +19,46 @@ logger = logging.getLogger(__name__)
 class RunArchaeologistUseCase:
     """Use case для запуска агента-археолога."""
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        session_manager: Optional[SessionManager] = None,
+        git_parser: Optional[IGitParser] = None,
+        analyze_usecase: Optional[AnalyzeRepositoryUseCase] = None,
+    ):
         """Инициализация use case.
         
         Args:
             config: Конфигурация приложения
+            session_manager: Менеджер сессий LLM (если None, создаётся по умолчанию)
+            git_parser: Реализация IGitParser (если None, создаётся по умолчанию)
+            analyze_usecase: Use case для анализа репозитория (если None, создаётся по умолчанию)
         """
         self.config = config
         self.db = get_database()
         
         # Инициализация менеджера сессий
-        llm_config = config.get("llm", {})
-        message_limit = llm_config.get("message_limit", 7)
-        self.session_manager = SessionManager(message_limit=message_limit, config=config)
+        if session_manager is None:
+            llm_config = config.get("llm", {})
+            message_limit = llm_config.get("message_limit", 7)
+            self.session_manager = SessionManager(message_limit=message_limit, config=config)
+        else:
+            self.session_manager = session_manager
         
         # Инициализация парсера
-        diff_only = config.get("analysis", {}).get("depth", "full") == "diff"
-        self.git_parser = GitParser(diff_only=diff_only)
+        if git_parser is None:
+            diff_only = config.get("analysis", {}).get("depth", "full") == "diff"
+            from gmod.infrastructure.git.git_parser import GitParser
+            self.git_parser = GitParser(diff_only=diff_only)
+        else:
+            self.git_parser = git_parser
         
         # Use case для анализа репозитория
-        self.analyze_usecase = AnalyzeRepositoryUseCase(diff_only=diff_only)
+        if analyze_usecase is None:
+            diff_only = config.get("analysis", {}).get("depth", "full") == "diff"
+            self.analyze_usecase = AnalyzeRepositoryUseCase(diff_only=diff_only)
+        else:
+            self.analyze_usecase = analyze_usecase
     
     def execute(
         self,
