@@ -1007,11 +1007,27 @@ class MainWindow(QMainWindow):
         self.send_button = QPushButton("Отправить")
         self.send_button.clicked.connect(self._on_send_message)
         input_controls.addWidget(self.send_button)
-        
+
         chat_layout.addLayout(input_controls)
+
+        # Статус нейросети: «Нейросеть работает» / «Нейросеть недоступна...»
+        status_row = QHBoxLayout()
+        self.llm_status_dot = QLabel("●")
+        self.llm_status_dot.setStyleSheet("color: gray; font-size: 16px;")
+        self.llm_status_label = QLabel("Нейросеть: статус неизвестен")
+        self.llm_status_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.llm_check_btn = QPushButton("Проверить")
+        self.llm_check_btn.setMaximumWidth(110)
+        self.llm_check_btn.clicked.connect(self._on_check_llm_status)
+        status_row.addWidget(self.llm_status_dot)
+        status_row.addWidget(self.llm_status_label, 1)
+        status_row.addWidget(self.llm_check_btn)
+        chat_layout.addLayout(status_row)
         
         # Загружаем провайдеры и модели из настроек
         self._load_llm_settings()
+        # Тихая проверка статуса после создания вкладки (не блокирует UI)
+        QTimer.singleShot(500, self._on_check_llm_status)
         
         return chat_tab
     
@@ -1060,18 +1076,93 @@ class MainWindow(QMainWindow):
             }
     
     def _on_provider_changed(self, provider_name: str) -> None:
-        """Обработка смены провайдера."""
+        """Обработка смены провайдера (без дублей моделей)."""
+        self.model_combo.blockSignals(True)
         self.model_combo.clear()
-        model = self.provider_model_map.get(provider_name, "")
-        if model:
-            self.model_combo.addItem(model)
+        seen = set()
+        base_model = self.provider_model_map.get(provider_name, "")
+        candidates = []
+        if base_model:
+            candidates.append(base_model)
         # Можно добавить дополнительные модели для провайдера
         if provider_name == "Ollama":
-            self.model_combo.addItems(["llama3.2:3b", "llama3.1:8b", "codellama:7b", "mistral:7b"])
+            candidates += ["llama3.2:3b", "llama3.1:8b", "codellama:7b", "mistral:7b"]
         elif provider_name == "Groq":
-            self.model_combo.addItems(["llama3-8b-8192", "llama3-70b-8192", "mixtral-8x7b-32768"])
+            candidates += ["llama3-8b-8192", "llama3-70b-8192", "mixtral-8x7b-32768"]
         elif provider_name == "Gemini":
-            self.model_combo.addItems(["gemini-flash", "gemini-pro", "gemini-1.5-flash"])
+            candidates += ["gemini-flash", "gemini-pro", "gemini-1.5-flash"]
+        for m in candidates:
+            if m and m not in seen:
+                self.model_combo.addItem(m)
+                seen.add(m)
+        self.model_combo.blockSignals(False)
+        # Сохраняем выбор и обновляем статус
+        try:
+            self.db.save_workspace_state("chat_provider", provider_name)
+            self.db.save_workspace_state("chat_model", self.model_combo.currentText())
+        except Exception:
+            pass
+        if hasattr(self, "llm_status_label"):
+            QTimer.singleShot(0, self._on_check_llm_status)
+
+    def _build_llm_config_for_selection(self) -> dict:
+        """Конфиг с выбранным в чате провайдером первым в fallback-цепочке.
+
+        Фикс «чат игнорирует выбор провайдера»: переупорядочиваем providers
+        так, чтобы выбранный шёл первым, и подменяем его model на выбранную.
+        """
+        settings = get_settings()
+        cfg = settings.build_llm_config()
+        try:
+            selected = self.provider_combo.currentText().lower()
+            sel_model = self.model_combo.currentText().strip()
+        except Exception:
+            return cfg
+        providers = cfg.get("llm", {}).get("providers", [])
+        for p in providers:
+            if p.get("name", "").lower() == selected and sel_model:
+                p["model"] = sel_model
+        providers.sort(key=lambda p: 0 if p.get("name", "").lower() == selected else 1)
+        logger.info("LLM: выбран провайдер '%s' модель '%s'", selected, sel_model)
+        return cfg
+
+    def _on_check_llm_status(self) -> None:
+        """Проверка доступности нейросети с показом статуса и логами."""
+        if not hasattr(self, "llm_status_label"):
+            return
+        self.llm_status_label.setText("Нейросеть: проверка...")
+        self.llm_status_dot.setStyleSheet("color: orange; font-size: 16px;")
+        QApplication.processEvents()
+        try:
+            from gmod.infrastructure.llm.factory import LLMProviderFactory
+
+            cfg = self._build_llm_config_for_selection()
+            factory = LLMProviderFactory(cfg)
+            statuses = factory.check_all_statuses()
+            try:
+                selected = self.provider_combo.currentText()
+            except Exception:
+                selected = ""
+            # Ищем статус выбранного провайдера
+            shown = None
+            for prov_name, st in statuses.items():
+                if selected and selected.lower() in prov_name.lower():
+                    shown = st
+                    break
+            if shown is None:
+                ok_all = [s for s in statuses.values() if s.get("ok")]
+                shown = ok_all[0] if ok_all else next(iter(statuses.values()))
+            msg = shown.get("message", "")
+            ok = shown.get("ok", False)
+            self.llm_status_label.setText(f"Нейросеть: {msg}")
+            color = "green" if ok else "red"
+            self.llm_status_dot.setStyleSheet(f"color: {color}; font-size: 16px;")
+            self.status_bar.showMessage(msg)
+            logger.info("LLM статус: %s (ok=%s)", msg, ok)
+        except Exception as e:
+            logger.error("LLM статус: ошибка проверки: %s", e, exc_info=True)
+            self.llm_status_label.setText(f"Нейросеть недоступна. {e}")
+            self.llm_status_dot.setStyleSheet("color: red; font-size: 16px;")
     
     def _create_graph_tab(self) -> QWidget:
         """Создание вкладки графа с pyqtgraph + networkx."""
@@ -1545,6 +1636,21 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(compare_btn)
         
         left_layout.addLayout(actions_layout)
+
+        # Точность: оценка выбранного отчёта для обучения валидатора
+        feedback_row = QHBoxLayout()
+        feedback_row.addWidget(QLabel("Точность ответа:"))
+        good_btn = QPushButton("👍 Верно")
+        good_btn.clicked.connect(lambda: self._on_report_feedback(1))
+        feedback_row.addWidget(good_btn)
+        bad_btn = QPushButton("👎 Неверно")
+        bad_btn.clicked.connect(lambda: self._on_report_feedback(0))
+        feedback_row.addWidget(bad_btn)
+        feedback_row.addStretch()
+        left_layout.addLayout(feedback_row)
+        self.reports_accuracy_label = QLabel("")
+        self.reports_accuracy_label.setStyleSheet("color: gray; font-size: 11px;")
+        left_layout.addWidget(self.reports_accuracy_label)
         
         layout.addWidget(left_panel, 1)
         
@@ -1565,6 +1671,12 @@ class MainWindow(QMainWindow):
         self.report_meta.setWordWrap(True)
         self.report_meta.setStyleSheet("color: gray; font-size: 11px;")
         right_layout.addWidget(self.report_meta)
+
+        # Вердикт валидатора по выбранному отчёту
+        self.report_verdict = QLabel("")
+        self.report_verdict.setWordWrap(True)
+        self.report_verdict.setStyleSheet("color: #2a7d2a; font-size: 11px;")
+        right_layout.addWidget(self.report_verdict)
         
         layout.addWidget(right_panel, 1)
         
@@ -1608,6 +1720,16 @@ class MainWindow(QMainWindow):
             
             if not reports:
                 self.reports_list.addItem("Отчётов не найдено")
+            try:
+                acc = self.db.feedback_accuracy(repo_id)
+                if hasattr(self, "reports_accuracy_label"):
+                    if acc["total"]:
+                        self.reports_accuracy_label.setText(
+                            f"Точность LLM: {acc['accuracy']:.0%} ({acc['positive']}/{acc['total']} 👍)")
+                    else:
+                        self.reports_accuracy_label.setText("Оценок пока нет — отмечайте отчёты 👍/👎")
+            except Exception:
+                pass
                 
         except Exception as e:
             logger.error(f"Error refreshing reports: {e}")
@@ -1636,8 +1758,49 @@ class MainWindow(QMainWindow):
             data = json.loads(response_json)
             formatted = json.dumps(data, ensure_ascii=False, indent=2)
             self.report_view.setText(formatted)
-        except json.JSONDecodeError:
-            self.report_view.setText(response_json)
+        except (json.JSONDecodeError, TypeError):
+            self.report_view.setText(response_json or "(пусто — старый отчёт без текста)")
+
+        # Вердикт валидатора + текущая оценка пользователя
+        try:
+            risk = int(report.get("risk_score") or 5)
+            verdict, _p = self._get_validator().verdict(
+                risk, {"complexity": risk, "churn": 0, "size": 0, "coupling": 0})
+            fb_rows = [f for f in self.db.get_feedback(self._get_current_repo_id() or "")
+                       if f["report_id"] == report.get("id")]
+            mark = "ваша оценка: 👍" if fb_rows and int(fb_rows[0]["label"]) == 1 else (
+                "ваша оценка: 👎" if fb_rows else "вы ещё не оценили этот отчёт")
+            self.report_verdict.setText(f"Валидатор: {verdict} | {mark}")
+        except Exception as e:
+            logger.debug("verdict: %s", e)
+
+    def _on_report_feedback(self, label: int) -> None:
+        """Сохранить 👍/👎 для выбранного отчёта (питает точность и валидатор)."""
+        current = self.reports_list.currentItem() if hasattr(self, "reports_list") else None
+        if not current:
+            QMessageBox.warning(self, "Предупреждение", "Выберите отчёт из списка")
+            return
+        report = current.data(Qt.UserRole)
+        if not report or not report.get("id"):
+            return
+        repo_id = self._get_current_repo_id() or ""
+        try:
+            self.db.save_feedback(repo_id, int(report["id"]), int(label))
+            acc = self.db.feedback_accuracy(repo_id)
+            self.reports_accuracy_label.setText(
+                f"Точность LLM: {acc['accuracy']:.0%} ({acc['positive']}/{acc['total']} 👍)")
+            self.status_bar.showMessage(
+                f"Оценка сохранена: {'👍' if label else '👎'} (точность {acc['accuracy']:.0%})")
+            logger.info("feedback сохранён: report=%s label=%s accuracy=%.2f",
+                        report["id"], label, acc["accuracy"])
+            self._on_report_selected(current, None)
+            try:
+                self._refresh_validator_accuracy()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error("feedback error: %s", e, exc_info=True)
+            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить оценку: {e}")
     
     def _export_report(self) -> None:
         """Экспорт выбранного отчёта."""
@@ -2056,7 +2219,112 @@ class MainWindow(QMainWindow):
         params_layout.addRow(run_layout)
         
         layout.addWidget(self.analysis_params_group)
-        
+
+        # --- Управление прогнозом: температура / токены / горизонт ---
+        from gmod.config.settings import get_settings as _get_settings
+        try:
+            _settings = _get_settings()
+            _temp, _tok, _hor = _settings.temperature, _settings.max_tokens, _settings.forecast_horizon
+        except Exception:
+            _temp, _tok, _hor = 0.7, 2000, 5
+        forecast_group = QGroupBox("Управление прогнозом / анализом (LLM)")
+        forecast_layout = QFormLayout(forecast_group)
+        self.param_temperature = QDoubleSpinBox()
+        self.param_temperature.setRange(0.0, 2.0)
+        self.param_temperature.setSingleStep(0.1)
+        self.param_temperature.setValue(float(_temp))
+        self.param_temperature.setToolTip("Креативность нейросети: 0 — строго, 2 — фантазия")
+        forecast_layout.addRow("Температура:", self.param_temperature)
+        self.param_max_tokens = QSpinBox()
+        self.param_max_tokens.setRange(100, 8000)
+        self.param_max_tokens.setValue(int(_tok))
+        forecast_layout.addRow("Max tokens:", self.param_max_tokens)
+        self.param_forecast_horizon = QSpinBox()
+        self.param_forecast_horizon.setRange(1, 50)
+        self.param_forecast_horizon.setValue(int(_hor))
+        self.param_forecast_horizon.setToolTip("На сколько коммитов вперёд строить прогноз риска")
+        forecast_layout.addRow("Горизонт прогноза (коммитов):", self.param_forecast_horizon)
+        forecast_btn_row = QHBoxLayout()
+        self.forecast_btn = QPushButton("Построить прогноз риска")
+        self.forecast_btn.clicked.connect(self._on_forecast_risk)
+        forecast_btn_row.addWidget(self.forecast_btn)
+        self.forecast_label = QLabel("Прогноз появится здесь")
+        self.forecast_label.setWordWrap(True)
+        forecast_btn_row.addWidget(self.forecast_label, 1)
+        forecast_layout.addRow(forecast_btn_row)
+        layout.addWidget(forecast_group)
+
+        # --- Валидатор с 0: эпохи + точность ---
+        validator_group = QGroupBox("Нейросеть-валидатор (с нуля): эпохи и точность")
+        validator_layout = QFormLayout(validator_group)
+        self.param_epochs = QSpinBox()
+        self.param_epochs.setRange(1, 10000)
+        try:
+            self.param_epochs.setValue(int(_get_settings().validator_epochs))
+        except Exception:
+            self.param_epochs.setValue(50)
+        self.param_epochs.setToolTip("Сколько эпох обучать валидатор на ваших оценках 👍/👎")
+        validator_layout.addRow("Кол-во эпох:", self.param_epochs)
+        self.param_val_lr = QDoubleSpinBox()
+        self.param_val_lr.setRange(0.0001, 5.0)
+        self.param_val_lr.setSingleStep(0.05)
+        self.param_val_lr.setDecimals(4)
+        try:
+            self.param_val_lr.setValue(float(_get_settings().validator_lr))
+        except Exception:
+            self.param_val_lr.setValue(0.1)
+        validator_layout.addRow("Learning rate:", self.param_val_lr)
+        val_btn_row = QHBoxLayout()
+        self.train_validator_btn = QPushButton("Обучить валидатор")
+        self.train_validator_btn.clicked.connect(self._on_train_validator)
+        val_btn_row.addWidget(self.train_validator_btn)
+        self.validator_accuracy_label = QLabel("Точность: нет оценок — ставьте 👍/👎 во вкладке «Отчёты»")
+        self.validator_accuracy_label.setWordWrap(True)
+        val_btn_row.addWidget(self.validator_accuracy_label, 1)
+        validator_layout.addRow(val_btn_row)
+        layout.addWidget(validator_group)
+
+        # --- Функции: выбор файлов/директорий + таблица функций × метрики ---
+        funcs_group = QGroupBox("Функции: выбор файлов/директорий для анализа")
+        funcs_layout = QVBoxLayout(funcs_group)
+        paths_row = QHBoxLayout()
+        self.func_paths_list = QListWidget()
+        self.func_paths_list.setMaximumHeight(80)
+        self.func_paths_list.setToolTip("Относительные пути внутри репозитория")
+        paths_row.addWidget(self.func_paths_list, 1)
+        paths_btns = QVBoxLayout()
+        self.func_add_files_btn = QPushButton("＋ Файлы")
+        self.func_add_files_btn.clicked.connect(self._on_add_func_files)
+        paths_btns.addWidget(self.func_add_files_btn)
+        self.func_add_dir_btn = QPushButton("＋ Папка")
+        self.func_add_dir_btn.clicked.connect(self._on_add_func_dir)
+        paths_btns.addWidget(self.func_add_dir_btn)
+        self.func_clear_btn = QPushButton("Очистить")
+        self.func_clear_btn.clicked.connect(lambda: self.func_paths_list.clear())
+        paths_btns.addWidget(self.func_clear_btn)
+        paths_row.addLayout(paths_btns)
+        funcs_layout.addLayout(paths_row)
+        run_row = QHBoxLayout()
+        self.func_analyze_btn = QPushButton("Анализировать выбранное (таблица функций × метрики)")
+        self.func_analyze_btn.clicked.connect(self._on_analyze_func_paths)
+        run_row.addWidget(self.func_analyze_btn)
+        self.func_status_label = QLabel("")
+        run_row.addWidget(self.func_status_label, 1)
+        funcs_layout.addLayout(run_row)
+        from PySide6.QtGui import QStandardItemModel as _Model
+        self.func_table = QTableView()
+        self.func_table.setAlternatingRowColors(True)
+        self.func_table.setSortingEnabled(True)
+        self.func_table_model = _Model()
+        self.func_table_model.setHorizontalHeaderLabels(["Файл", "Функция", "Метрика", "Значение"])
+        self.func_table.setModel(self.func_table_model)
+        self.func_table.setMaximumHeight(220)
+        funcs_layout.addWidget(self.func_table)
+        layout.addWidget(funcs_group)
+
+        # Первичное обновление точности валидатора
+        QTimer.singleShot(0, self._refresh_validator_accuracy)
+
         return analysis_tab
     
     def _create_mode_card(self, title: str, description: str, active: bool, callback) -> QWidget:
@@ -2208,14 +2476,28 @@ class MainWindow(QMainWindow):
                     except Exception as e:
                         self.error.emit(str(e))
             
-            # Подготавливаем конфиг
+            # Подготавливаем конфиг (уважаем выбор провайдера из чата +
+            # параметры прогноза: temperature / max_tokens / горизонт)
+            llm_cfg = self._build_llm_config_for_selection()["llm"]
+            try:
+                if hasattr(self, "param_temperature"):
+                    llm_cfg["temperature"] = float(self.param_temperature.value())
+                if hasattr(self, "param_max_tokens"):
+                    llm_cfg["max_tokens"] = int(self.param_max_tokens.value())
+            except Exception:
+                pass
             config = {
-                "llm": get_settings().build_llm_config(),
+                "llm": llm_cfg,
                 "analysis": {
                     "depth": "diff" if self.param_diff_only.isChecked() else "full",
                     "unit": self.param_analysis_unit.currentText()
                 }
             }
+            try:
+                if hasattr(self, "param_forecast_horizon"):
+                    config["forecast"] = {"horizon": int(self.param_forecast_horizon.value())}
+            except Exception:
+                pass
             config["repo_path"] = repo_path
             
             self.analysis_thread = AnalysisThread(repo_id, commit_hash, config)
@@ -2245,6 +2527,245 @@ class MainWindow(QMainWindow):
         """Обработка ошибки анализа."""
         self.run_analysis_btn.setEnabled(True)
         self.analysis_progress.setText(f"Ошибка: {error}")
+
+    # ============ Валидатор с 0 / точность / прогноз / функции ============
+
+    def _get_validator(self):
+        from gmod.infrastructure.llm.validator import ZeroValidator, default_model_path
+        return ZeroValidator(model_path=default_model_path())
+
+    def _refresh_validator_accuracy(self) -> None:
+        """Показать точность LLM (по 👍/👎) и валидатора."""
+        if not hasattr(self, "validator_accuracy_label"):
+            return
+        try:
+            repo_id = self._get_current_repo_id()
+            fb = self.db.feedback_accuracy(repo_id)
+            runs = self.db.get_validator_runs(limit=1)
+            if fb["total"] == 0:
+                self.validator_accuracy_label.setText(
+                    "Точность: нет оценок — ставьте 👍/👎 во вкладке «Отчёты»")
+            else:
+                last = f", последний запуск {runs[0]['accuracy']:.0%} за {runs[0]['epochs']} эпох" if runs else ""
+                self.validator_accuracy_label.setText(
+                    f"Точность LLM по вашим оценкам: {fb['accuracy']:.0%} "
+                    f"({fb['positive']}/{fb['total']} 👍){last}")
+        except Exception as e:
+            logger.error("validator accuracy refresh: %s", e)
+
+    def _on_train_validator(self) -> None:
+        """Обучение валидатора N эпох на фидбеке пользователя."""
+        try:
+            epochs = int(self.param_epochs.value())
+            lr = float(self.param_val_lr.value())
+        except Exception:
+            epochs, lr = 50, 0.1
+        repo_id = self._get_current_repo_id()
+        if not repo_id:
+            self.validator_accuracy_label.setText("Сначала загрузите репозиторий")
+            return
+        feedback = self.db.get_feedback(repo_id)
+        if len(feedback) < 2:
+            self.validator_accuracy_label.setText(
+                f"Нужно минимум 2 оценки (сейчас {len(feedback)}). Ставьте 👍/👎 во вкладке «Отчёты»")
+            return
+        try:
+            from gmod.usecases.analyze_repository import AnalyzeRepositoryUseCase
+            from gmod.infrastructure.llm.validator import ZeroValidator
+
+            self.validator_accuracy_label.setText("Обучение...")
+            QApplication.processEvents()
+            X, y = [], []
+            for fb in feedback:
+                rid = fb["report_id"]
+                with self.db.get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT risk_score FROM ai_reports WHERE id = ?", (rid,))
+                    row = cur.fetchone()
+                risk = int(row[0]) if row and row[0] else 5
+                metrics = {"complexity": risk, "churn": 0.0, "size": 0.0, "coupling": 0.0}
+                X.append(ZeroValidator.features_from_metrics(risk, metrics))
+                y.append(int(fb["label"]))
+            validator = self._get_validator()
+            run = validator.train(X, y, epochs=epochs, lr=lr)
+            self.db.save_validator_run(epochs=run.epochs, accuracy=run.accuracy,
+                                       n_samples=run.n_samples)
+            # persist epochs в config.yaml для следующего запуска
+            try:
+                import yaml
+                from gmod.config.constants import CONFIG_FILE
+                data = {}
+                if CONFIG_FILE.exists():
+                    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                        data = yaml.safe_load(f) or {}
+                data.setdefault("validator", {})["epochs"] = epochs
+                data["validator"]["lr"] = lr
+                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                    yaml.safe_dump(data, f, allow_unicode=True)
+            except Exception as e:
+                logger.warning("Не удалось сохранить epochs в config: %s", e)
+            self.validator_accuracy_label.setText(
+                f"Готово за {run.epochs} эпох: точность {run.accuracy:.0%} на {run.n_samples} оценках")
+            self.status_bar.showMessage(f"Валидатор обучен: accuracy {run.accuracy:.0%}")
+            logger.info("Валидатор обучен: epochs=%d accuracy=%.3f", run.epochs, run.accuracy)
+        except Exception as e:
+            logger.error("Ошибка обучения валидатора: %s", e, exc_info=True)
+            self.validator_accuracy_label.setText(f"Ошибка обучения: {e}")
+
+    def _on_add_func_files(self) -> None:
+        repo_id = self._get_current_repo_id()
+        repo_path = self._get_repo_path(repo_id) if repo_id else None
+        if not repo_path:
+            self.func_status_label.setText("Сначала загрузите репозиторий")
+            return
+        files, _ = QFileDialog.getOpenFileNames(self, "Выберите файлы", repo_path)
+        for f in files:
+            try:
+                from pathlib import Path as _P
+                rel = str(_P(f).relative_to(repo_path))
+            except ValueError:
+                rel = f
+            if not self.func_paths_list.findItems(rel, Qt.MatchExactly):
+                self.func_paths_list.addItem(rel)
+
+    def _on_add_func_dir(self) -> None:
+        repo_id = self._get_current_repo_id()
+        repo_path = self._get_repo_path(repo_id) if repo_id else None
+        if not repo_path:
+            self.func_status_label.setText("Сначала загрузите репозиторий")
+            return
+        d = QFileDialog.getExistingDirectory(self, "Выберите папку", repo_path)
+        if d:
+            try:
+                from pathlib import Path as _P
+                rel = str(_P(d).relative_to(repo_path))
+            except ValueError:
+                rel = d
+            if not self.func_paths_list.findItems(rel, Qt.MatchExactly):
+                self.func_paths_list.addItem(rel)
+
+    def _on_analyze_func_paths(self) -> None:
+        """Анализ выбранных файлов/папок → таблица функций × метрики + вердикт LLM."""
+        from PySide6.QtGui import QStandardItem
+        repo_id = self._get_current_repo_id()
+        if not repo_id:
+            self.func_status_label.setText("Репозиторий не выбран")
+            return
+        paths = [self.func_paths_list.item(i).text()
+                 for i in range(self.func_paths_list.count())]
+        if not paths:
+            self.func_status_label.setText("Добавьте файлы или папку (＋ Файлы / ＋ Папка)")
+            return
+        repo_path = self._get_repo_path(repo_id)
+        try:
+            from gmod.domain.entities import Repository
+            from gmod.usecases.analyze_repository import AnalyzeRepositoryUseCase
+            from gmod.infrastructure.git.git_parser import GitParser
+
+            commits = GitParser().get_commits(repo_id, limit=1, repo_path=repo_path)
+            commit_hash = commits[0].hash if commits else "manual"
+            repo = Repository(id=repo_id, url="", local_path=repo_path, name=repo_id)
+            self.func_status_label.setText("Анализ...")
+            QApplication.processEvents()
+            result = AnalyzeRepositoryUseCase().analyze_paths(repo, commit_hash, paths)
+            rows = result.get("function_table", [])
+            self.func_table_model.removeRows(0, self.func_table_model.rowCount())
+            for r in rows[:2000]:
+                items = [QStandardItem(str(r["file"])), QStandardItem(str(r["function"])),
+                         QStandardItem(str(r["metric"])), QStandardItem(f"{r['value']:.4f}")]
+                for it in items:
+                    it.setEditable(False)
+                self.func_table_model.appendRow(items)
+            # Вердикт нейросети: краткое описание метрик выбранных функций
+            verdict = ""
+            try:
+                if rows:
+                    from gmod.infrastructure.llm.factory import LLMProviderFactory
+                    cfg = self._build_llm_config_for_selection()
+                    factory = LLMProviderFactory(cfg)
+                    sample = "\n".join(
+                        f"{r['function']} [{r['metric']}={r['value']}]" for r in rows[:30])
+                    prompt = (
+                        "Опиши качество этих функций по метрикам (1-3 предложения, по-русски):\n" + sample)
+                    verdict = factory.generate_with_fallback(
+                        prompt,
+                        temperature=float(self.param_temperature.value()),
+                        max_tokens=min(int(self.param_max_tokens.value()), 800),
+                    )
+            except Exception as e:
+                logger.warning("LLM-описание функций недоступно: %s", e)
+                verdict = "Нейросеть недоступна — показан только табличный результат."
+            self.func_status_label.setText(
+                f"Готово: {result['units_analyzed']} единиц, {result['metrics_computed']} метрик. {verdict[:300]}")
+            logger.info("Анализ путей: %s", result)
+            try:
+                self._refresh_metrics()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error("Ошибка анализа путей: %s", e, exc_info=True)
+            self.func_status_label.setText(f"Ошибка: {e}")
+
+    def _on_forecast_risk(self) -> None:
+        """Прогноз риска на N коммитов вперёд: тренд метрик + LLM + вердикт валидатора."""
+        repo_id = self._get_current_repo_id()
+        if not repo_id:
+            self.forecast_label.setText("Сначала загрузите репозиторий")
+            return
+        try:
+            horizon = int(self.param_forecast_horizon.value())
+        except Exception:
+            horizon = 5
+        try:
+            with self.db.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT commit_hash, AVG(value) FROM raw_metrics
+                    WHERE repo_id = ? GROUP BY commit_hash ORDER BY timestamp DESC LIMIT 20
+                """, (repo_id,))
+                points = list(reversed(cur.fetchall()))
+            if len(points) < 2:
+                self.forecast_label.setText("Недостаточно истории метрик для прогноза — запустите анализ")
+                return
+            # Линейный тренд (оптимизация: без numpy)
+            ys = [float(p[1]) for p in points]
+            n = len(ys)
+            xs = list(range(n))
+            mx, my = sum(xs) / n, sum(ys) / n
+            denom = sum((x - mx) ** 2 for x in xs) or 1.0
+            slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / denom
+            forecast_vals = [ys[-1] + slope * (i + 1) for i in range(horizon)]
+            trend = "растёт 📈" if slope > 0.01 else ("падает 📉" if slope < -0.01 else "стабилен ➡️")
+            llm_text = ""
+            try:
+                from gmod.infrastructure.llm.factory import LLMProviderFactory
+                cfg = self._build_llm_config_for_selection()
+                factory = LLMProviderFactory(cfg)
+                prompt = (
+                    f"Метрики риска по коммитам: {[round(v, 2) for v in ys[-10:]]}. "
+                    f"Тренд {trend}. Дай прогноз на {horizon} коммитов вперёд "
+                    f"(по-русски, 2-3 предложения + оценка риска 1-10).")
+                llm_text = factory.generate_with_fallback(
+                    prompt, temperature=float(self.param_temperature.value()),
+                    max_tokens=min(int(self.param_max_tokens.value()), 800))
+            except Exception as e:
+                logger.warning("Прогноз LLM недоступен: %s", e)
+                llm_text = "Нейросеть недоступна — показан только математический тренд."
+            # Вердикт валидатора
+            try:
+                v = self._get_validator()
+                risk_guess = max(1, min(10, int(round(forecast_vals[-1])))) if forecast_vals else 5
+                verdict, _p = v.verdict(risk_guess, {"complexity": risk_guess,
+                                                    "churn": abs(slope) * 10, "size": 0, "coupling": 0})
+            except Exception:
+                verdict = ""
+            self.forecast_label.setText(
+                f"Тренд {trend} (наклон {slope:+.3f}). Прогноз: "
+                f"{', '.join(f'{x:.2f}' for x in forecast_vals)}. {llm_text[:400]} {verdict}")
+            logger.info("Прогноз риска: horizon=%d slope=%.3f", horizon, slope)
+        except Exception as e:
+            logger.error("Ошибка прогноза: %s", e, exc_info=True)
+            self.forecast_label.setText(f"Ошибка прогноза: {e}")
     
     def _create_menu(self) -> None:
         """Создание меню."""
@@ -2424,6 +2945,12 @@ class MainWindow(QMainWindow):
                 url = QLineEdit(settings.ollama_url)
                 form.addRow("URL сервера:", url)
                 entry["url"] = url
+                # API-ключ для Ollama Cloud (для локального сервера — пусто)
+                key = QLineEdit(settings.ollama_api_key)
+                key.setEchoMode(QLineEdit.Password)
+                key.setPlaceholderText("API-ключ (для Ollama Cloud)")
+                form.addRow("API-ключ:", key)
+                entry["api_key"] = key
             else:
                 key = QLineEdit(
                     settings.groq_api_key if pname == "groq" else settings.gemini_api_key
@@ -2692,6 +3219,7 @@ class MainWindow(QMainWindow):
                     if pname == "ollama":
                         item["url"] = entry["url"].text().strip() or "http://localhost:11434"
                         item["model"] = W["ollama_model"].text().strip() or "llama3.2:3b"
+                        item["api_key"] = entry["api_key"].text().strip()
                     elif pname == "groq":
                         item["api_key"] = entry["api_key"].text().strip()
                         item["model"] = W["groq_model"].text().strip() or "llama3-8b-8192"
@@ -2789,7 +3317,11 @@ class MainWindow(QMainWindow):
         self.central_tabs.setCurrentWidget(tab)
 
     def _check_provider_connection(self, provider_name: str, parent) -> None:
-        """Проверка соединения с провайдером (Настройки → AI-провайдеры)."""
+        """Проверка соединения с провайдером (Настройки → AI-провайдеры).
+
+        Показывает понятное сообщение: «Нейросеть работает» /
+        «Нейросеть недоступна. API ключ не валидный» / ...
+        """
         from PySide6.QtWidgets import QMessageBox
 
         try:
@@ -2800,7 +3332,10 @@ class MainWindow(QMainWindow):
                 from gmod.infrastructure.llm.ollama_provider import OllamaProvider
 
                 provider = OllamaProvider(config={
-                    "url": settings.ollama_url, "model": settings.ollama_model})
+                    "url": settings.ollama_url,
+                    "model": settings.ollama_model,
+                    "api_key": settings.ollama_api_key,
+                })
             elif provider_name == "groq":
                 from gmod.infrastructure.llm.groq_provider import GroqProvider
 
@@ -2811,10 +3346,17 @@ class MainWindow(QMainWindow):
 
                 provider = GeminiProvider(api_key=settings.gemini_api_key,
                                           config={"model": settings.gemini_model})
-            ok = provider.is_available()
+            # Используем расширенную проверку check_status, если есть
+            if hasattr(provider, "check_status"):
+                status = provider.check_status()
+                ok = status.ok
+                msg = status.message
+            else:
+                ok = provider.is_available()
+                msg = "Нейросеть работает" if ok else "Нейросеть недоступна"
             QMessageBox.information(
                 parent, "Проверка соединения",
-                f"{provider_name}: {'доступен' if ok else 'недоступен'}")
+                f"{provider_name}: {msg}")
         except Exception as e:
             from PySide6.QtWidgets import QMessageBox
 
@@ -3063,7 +3605,15 @@ class MainWindow(QMainWindow):
             from gmod.usecases.run_archaeologist import RunArchaeologistUseCase
 
             settings = get_settings()
-            config = settings.build_llm_config()
+            config = self._build_llm_config_for_selection()
+            # Пробрасываем параметры прогноза/анализа из вкладки «Анализ», если заданы
+            try:
+                if hasattr(self, "param_temperature"):
+                    config.setdefault("llm", {})["temperature"] = float(self.param_temperature.value())
+                if hasattr(self, "param_max_tokens"):
+                    config.setdefault("llm", {})["max_tokens"] = int(self.param_max_tokens.value())
+            except Exception:
+                pass
 
             # Текущий репозиторий и коммит
             repo_id = self._get_current_repo_id()

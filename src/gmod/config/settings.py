@@ -77,6 +77,14 @@ class Settings:
         return "llama3.2:3b"
 
     @property
+    def ollama_api_key(self) -> str:
+        """API ключ Ollama Cloud (для локального сервера — пустая строка)."""
+        for p in self.llm_providers:
+            if p.get("name") == "ollama":
+                return p.get("api_key", "") or ""
+        return ""
+
+    @property
     def groq_api_key(self) -> str:
         for p in self.llm_providers:
             if p.get("name") == "groq":
@@ -132,6 +140,20 @@ class Settings:
     def log_level(self) -> str:
         return self.get("logging", "level", default=DEFAULT_LOG_LEVEL)
 
+    # ---------- Валидатор (нейросеть с 0) и прогноз ----------
+    @property
+    def validator_epochs(self) -> int:
+        return int(self.get("validator", "epochs", default=50))
+
+    @property
+    def validator_lr(self) -> float:
+        return float(self.get("validator", "lr", default=0.1))
+
+    @property
+    def forecast_horizon(self) -> int:
+        """Горизонт прогноза (коммитов вперёд) для UI ползунка."""
+        return int(self.get("forecast", "horizon", default=5))
+
     def build_llm_config(self) -> Dict[str, Any]:
         """Собрать dict конфигурации для LLMProviderFactory из config.yaml."""
         providers = []
@@ -143,6 +165,7 @@ class Settings:
             if name == "ollama":
                 entry["url"] = p.get("url", "http://localhost:11434")
                 entry["model"] = p.get("model", "llama3.2:3b")
+                entry["api_key"] = p.get("api_key", "") or ""
             elif name == "groq":
                 entry["api_key"] = p.get("api_key", "")
                 entry["model"] = p.get("model", "llama3-8b-8192")

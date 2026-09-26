@@ -281,6 +281,107 @@ class AnalyzeRepositoryUseCase:
         except Exception as e:
             logger.error(f"[DB] Error saving metric {metric.metric_name}: {e}")
     
+    def analyze_paths(self, repository: Repository, commit_hash: str,
+                      paths: List[str]) -> Dict:
+        """Анализ выбранных пользователем файлов/директорий (не только diff).
+
+        Args:
+            repository: репозиторий
+            commit_hash: коммит для привязки метрик в БД
+            paths: относительные пути файлов или директорий в репозитории
+
+        Returns:
+            dict с results + function_table: [{file, function, metric, value}]
+        """
+        logger.info("[PATHS] Анализ выбранных путей: %s (коммит %s)", paths, commit_hash)
+        repo_root = Path(repository.local_path)
+        files: List[str] = []
+        for rel in paths:
+            p = (repo_root / rel) if not Path(rel).is_absolute() else Path(rel)
+            if p.is_dir():
+                for f in sorted(p.rglob("*")):
+                    if f.is_file():
+                        try:
+                            files.append(str(f.relative_to(repo_root)))
+                        except ValueError:
+                            files.append(str(f))
+            elif p.is_file():
+                try:
+                    files.append(str(p.relative_to(repo_root)))
+                except ValueError:
+                    files.append(str(p))
+            else:
+                logger.warning("[PATHS] Путь не найден, пропускаем: %s", rel)
+
+        files = [f for f in files if self._is_supported_file(f)]
+        logger.info("[PATHS] Файлов к анализу после фильтра: %d", len(files))
+
+        results: Dict = {
+            "status": "success" if files else "error",
+            "repository_id": repository.id,
+            "commit_hash": commit_hash,
+            "files_analyzed": 0,
+            "units_analyzed": 0,
+            "metrics_computed": 0,
+            "errors": [],
+            "function_table": [],
+        }
+        if not files:
+            results["message"] = "Нет поддерживаемых файлов в выбранных путях"
+            return results
+
+        commits = self.git_parser.get_commits(repository.id, limit=100)
+
+        for file_path in files:
+            try:
+                full = repo_root / file_path
+                content = full.read_text(encoding="utf-8", errors="ignore")
+                path = Path(file_path)
+                language = self.parser_factory.detect_language(path)
+                units = self.parser_factory.parse_file(path, content, language)
+                results["files_analyzed"] += 1
+                for unit in units:
+                    unit.file_path = file_path
+                    try:
+                        metrics = self.metric_factory.compute_all_metrics(unit)
+                        for metric in metrics:
+                            metric.file_path = file_path
+                            self._save_metric(repository.id, commit_hash, metric)
+                            results["function_table"].append({
+                                "file": file_path,
+                                "function": f"{unit.unit_type}:{unit.name}",
+                                "metric": metric.metric_name,
+                                "value": round(float(metric.value), 4),
+                            })
+                        results["metrics_computed"] += len(metrics)
+                        results["units_analyzed"] += 1
+                    except Exception as e:
+                        results["errors"].append(f"{file_path}::{unit.name}: {e}")
+            except Exception as e:
+                logger.error("[PATHS] Ошибка анализа %s: %s", file_path, e)
+                results["errors"].append(f"{file_path}: {e}")
+
+        logger.info(
+            "[PATHS] Готово: файлов=%d единиц=%d метрик=%d",
+            results["files_analyzed"], results["units_analyzed"], results["metrics_computed"],
+        )
+        return results
+
+    def get_function_metrics_table(self, repo_id: str,
+                                   commit_hash: Optional[str] = None) -> List[Dict]:
+        """Плоская таблица «функция × метрика × значение» для UI."""
+        rows = self.get_analysis_results(repo_id, commit_hash)
+        table = []
+        for r in rows:
+            if r.get("unit_type") in ("function", "class", "method"):
+                table.append({
+                    "file": r["file_path"],
+                    "function": f"{r['unit_type']}:{r['unit_name']}",
+                    "metric": r["metric_name"],
+                    "value": round(float(r["value"]), 4),
+                })
+        return table
+
     def get_analysis_results(self, repo_id: str, commit_hash: Optional[str] = None) -> List[Dict]:
         """Получение результатов анализа из БД.
         

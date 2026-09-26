@@ -122,6 +122,30 @@ class Database:
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+
+        # --- Валидатор с 0: фидбек пользователя (точность ответов/заметок) ---
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS validator_feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_id TEXT NOT NULL,
+                report_id INTEGER NOT NULL,
+                label INTEGER NOT NULL,
+                note TEXT DEFAULT '',
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(report_id)
+            )
+        """)
+
+        # --- Валидатор с 0: история обучений (эпохи -> точность) ---
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS validator_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                epochs INTEGER NOT NULL,
+                accuracy REAL NOT NULL,
+                n_samples INTEGER NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         
         # Индексы для оптимизации
         cursor.execute("""
@@ -238,15 +262,76 @@ class Database:
             return cursor.lastrowid
     
     def get_ai_reports(self, repo_id: str) -> list:
-        """Получение всех AI-отчётов для репозитория."""
+        """Получение всех AI-отчётов для репозитория.
+
+        Возвращает полный набор полей (включая prompt/response_json),
+        иначе вкладка «Отчёты» не может показать содержимое.
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, commit_hash, agent_type, risk_score, timestamp
+                SELECT id, commit_hash, agent_type, prompt, response_json,
+                       risk_score, timestamp
                 FROM ai_reports
                 WHERE repo_id = ?
                 ORDER BY timestamp DESC
             """, (repo_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    # ---------------- Валидатор: фидбек и точность ----------------
+
+    def save_feedback(self, repo_id: str, report_id: int, label: int, note: str = "") -> None:
+        """Сохранить оценку пользователя: 1 = 👍 верно, 0 = 👎 неверно."""
+        logger.info("feedback: repo=%s report=%s label=%s", repo_id, report_id, label)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO validator_feedback (repo_id, report_id, label, note)
+                VALUES (?, ?, ?, ?)
+            """, (repo_id, report_id, int(label), note))
+
+    def get_feedback(self, repo_id: Optional[str] = None) -> list:
+        """Все оценки (опционально по репозиторию)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if repo_id:
+                cursor.execute(
+                    "SELECT id, repo_id, report_id, label, note, timestamp"
+                    " FROM validator_feedback WHERE repo_id = ? ORDER BY timestamp DESC",
+                    (repo_id,),
+                )
+            else:
+                cursor.execute(
+                    "SELECT id, repo_id, report_id, label, note, timestamp"
+                    " FROM validator_feedback ORDER BY timestamp DESC",
+                )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def feedback_accuracy(self, repo_id: Optional[str] = None) -> dict:
+        """Точность ответов LLM по оценкам пользователя: доля 👍."""
+        rows = self.get_feedback(repo_id)
+        if not rows:
+            return {"total": 0, "positive": 0, "accuracy": 0.0}
+        pos = sum(1 for r in rows if int(r["label"]) == 1)
+        return {"total": len(rows), "positive": pos, "accuracy": pos / len(rows)}
+
+    def save_validator_run(self, epochs: int, accuracy: float, n_samples: int) -> int:
+        logger.info("validator_run: epochs=%s accuracy=%.3f n=%s", epochs, accuracy, n_samples)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO validator_runs (epochs, accuracy, n_samples)
+                VALUES (?, ?, ?)
+            """, (int(epochs), float(accuracy), int(n_samples)))
+            return cursor.lastrowid
+
+    def get_validator_runs(self, limit: int = 20) -> list:
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, epochs, accuracy, n_samples, timestamp
+                FROM validator_runs ORDER BY id DESC LIMIT ?
+            """, (limit,))
             return [dict(row) for row in cursor.fetchall()]
 
 
