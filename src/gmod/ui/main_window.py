@@ -1076,7 +1076,7 @@ class MainWindow(QMainWindow):
             }
     
     def _on_provider_changed(self, provider_name: str) -> None:
-        """Обработка смены провайдера (без дублей моделей)."""
+        """Обработка смены провайдера: для Ollama — обновляем модели с сервера."""
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
         seen = set()
@@ -1087,6 +1087,8 @@ class MainWindow(QMainWindow):
         # Можно добавить дополнительные модели для провайдера
         if provider_name == "Ollama":
             candidates += ["llama3.2:3b", "llama3.1:8b", "codellama:7b", "mistral:7b"]
+            # Асинхронно подгружаем реальные модели с сервера
+            QTimer.singleShot(0, self._fetch_ollama_models_for_chat)
         elif provider_name == "Groq":
             candidates += ["llama3-8b-8192", "llama3-70b-8192", "mixtral-8x7b-32768"]
         elif provider_name == "Gemini":
@@ -1104,6 +1106,31 @@ class MainWindow(QMainWindow):
             pass
         if hasattr(self, "llm_status_label"):
             QTimer.singleShot(0, self._on_check_llm_status)
+
+    def _fetch_ollama_models_for_chat(self) -> None:
+        """Получить модели с Ollama для комбобокса чата."""
+        try:
+            from gmod.config.settings import get_settings
+            settings = get_settings()
+            url = settings.ollama_url.rstrip("/") + "/api/tags"
+            import requests
+            resp = requests.get(url, timeout=5)
+            if resp.status_code == 200:
+                models = resp.json().get("models", [])
+                model_names = [m.get("name", "") for m in models if m.get("name")]
+                if model_names:
+                    current = self.model_combo.currentText()
+                    self.model_combo.blockSignals(True)
+                    self.model_combo.clear()
+                    self.model_combo.addItems(model_names)
+                    if current in model_names:
+                        self.model_combo.setCurrentText(current)
+                    else:
+                        self.model_combo.setCurrentIndex(0)
+                    self.model_combo.blockSignals(False)
+                    logger.info("Ollama: загружено %d моделей для чата", len(model_names))
+        except Exception as e:
+            logger.debug("Ollama models fetch failed: %s", e)
 
     def _build_llm_config_for_selection(self) -> dict:
         """Конфиг с выбранным в чате провайдером первым в fallback-цепочке.
@@ -2919,6 +2946,7 @@ class MainWindow(QMainWindow):
 
         # Хранилище виджетов для сохранения
         W: dict = {}
+        self._settings_W = W
 
         def _scroll_page(inner: QWidget) -> QWidget:
             scroll = QScrollArea()
@@ -2942,8 +2970,17 @@ class MainWindow(QMainWindow):
             form.addRow(order)
             entry = {"enabled": enabled, "order": order}
             if pname == "ollama":
+                url_row = QHBoxLayout()
                 url = QLineEdit(settings.ollama_url)
-                form.addRow("URL сервера:", url)
+                url.setPlaceholderText("http://localhost:11434")
+                url_row.addWidget(url, 1)
+                refresh_models_btn = QPushButton("🔄 Обновить модели")
+                refresh_models_btn.setToolTip("Получить список моделей с сервера Ollama")
+                refresh_models_btn.clicked.connect(
+                    lambda _c, u=url: self._fetch_ollama_models(u, tab)
+                )
+                url_row.addWidget(refresh_models_btn)
+                form.addRow("URL сервера:", url_row)
                 entry["url"] = url
                 # API-ключ для Ollama Cloud (для локального сервера — пусто)
                 key = QLineEdit(settings.ollama_api_key)
@@ -2951,6 +2988,13 @@ class MainWindow(QMainWindow):
                 key.setPlaceholderText("API-ключ (для Ollama Cloud)")
                 form.addRow("API-ключ:", key)
                 entry["api_key"] = key
+                # Комбобокс моделей (заполнится после нажатия "Обновить модели")
+                model_combo = QComboBox()
+                model_combo.setEditable(True)
+                model_combo.addItem(settings.ollama_model)
+                model_combo.setToolTip("Выберите или введите модель. Нажмите 'Обновить модели' для списка с сервера")
+                form.addRow("Модель:", model_combo)
+                entry["model_combo"] = model_combo
             else:
                 key = QLineEdit(
                     settings.groq_api_key if pname == "groq" else settings.gemini_api_key
@@ -3218,7 +3262,11 @@ class MainWindow(QMainWindow):
                     item = {"name": pname, "enabled": entry["enabled"].isChecked()}
                     if pname == "ollama":
                         item["url"] = entry["url"].text().strip() or "http://localhost:11434"
-                        item["model"] = W["ollama_model"].text().strip() or "llama3.2:3b"
+                        model_combo = entry.get("model_combo")
+                        if model_combo:
+                            item["model"] = model_combo.currentText().strip() or "llama3.2:3b"
+                        else:
+                            item["model"] = W["ollama_model"].text().strip() or "llama3.2:3b"
                         item["api_key"] = entry["api_key"].text().strip()
                     elif pname == "groq":
                         item["api_key"] = entry["api_key"].text().strip()
@@ -3361,6 +3409,59 @@ class MainWindow(QMainWindow):
             from PySide6.QtWidgets import QMessageBox
 
             QMessageBox.warning(parent, "Проверка соединения", f"Ошибка: {e}")
+
+    def _fetch_ollama_models(self, url_widget, parent_tab) -> None:
+        """Получить список моделей с Ollama сервера и заполнить комбобокс."""
+        from PySide6.QtWidgets import QMessageBox, QApplication
+        import requests
+
+        url = url_widget.text().strip() or "http://localhost:11434"
+        if not url.endswith("/api/tags"):
+            api_url = url.rstrip("/") + "/api/tags"
+        else:
+            api_url = url
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            resp = requests.get(api_url, timeout=10)
+            if resp.status_code == 200:
+                models = resp.json().get("models", [])
+                model_names = [m.get("name", "") for m in models if m.get("name")]
+                if not model_names:
+                    QMessageBox.warning(parent_tab, "Модели не найдены",
+                        "Ollama ответил, но список моделей пуст.\n"
+                        "Проверьте, что модели установлены: `ollama pull <model>`")
+                    return
+                # Находим комбобокс модели в той же вкладке
+                for pname, entry in self._settings_W.get("prov", {}).items():
+                    if pname == "ollama" and "model_combo" in entry:
+                        combo = entry["model_combo"]
+                        current = combo.currentText()
+                        combo.blockSignals(True)
+                        combo.clear()
+                        combo.addItems(model_names)
+                        if current in model_names:
+                            combo.setCurrentText(current)
+                        else:
+                            combo.setCurrentIndex(0)
+                        combo.blockSignals(False)
+                        break
+                QMessageBox.information(parent_tab, "Готово",
+                    f"Получено моделей: {len(model_names)}")
+            elif resp.status_code == 401:
+                QMessageBox.warning(parent_tab, "Ошибка",
+                    "Нужен API-ключ (Ollama Cloud). Введите ключ в поле выше.")
+            else:
+                QMessageBox.warning(parent_tab, "Ошибка",
+                    f"HTTP {resp.status_code}: {resp.text[:200]}")
+        except requests.exceptions.ConnectionError:
+            QMessageBox.warning(parent_tab, "Ошибка соединения",
+                f"Не удалось подключиться к {url}.\n"
+                "Проверьте, что Ollama запущена: `ollama serve`")
+        except Exception as e:
+            QMessageBox.warning(parent_tab, "Ошибка", f"{type(e).__name__}: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def _clear_old_reports(self, parent) -> None:
         """Удаление AI-отчётов старше N дней (Настройки → Хранение)."""
