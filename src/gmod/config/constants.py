@@ -20,7 +20,8 @@ CONFIG_FILE = DATA_DIR / "config.yaml"
 DATABASE_FILE = DATA_DIR / "gmod.db"
 
 # Настройки БД
-DB_VERSION = 1
+# v2: + таблицы validator_feedback / validator_runs (IF NOT EXISTS, безопасно)
+DB_VERSION = 2
 
 # Настройки UI
 DEFAULT_WINDOW_WIDTH = 1200

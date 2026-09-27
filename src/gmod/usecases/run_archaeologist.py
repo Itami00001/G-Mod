@@ -87,19 +87,28 @@ class RunArchaeologistUseCase:
             target_commit = next((c for c in commits if c.hash == commit_hash), None)
             
             if not target_commit:
+                hint = ("Коммит не найден в репозитории. Обновите ветку "
+                        "(кнопка веток в правой шторке) и загрузите репозиторий заново.")
+                logger.error("Archaeologist: %s (commit=%s)", hint, commit_hash)
                 return {
                     "status": "error",
                     "message": f"Commit {commit_hash} not found",
+                    "hint": hint,
                     "agent_id": agent_id
                 }
-            
+
             # Получаем результаты анализа метрик
             metrics_results = self.analyze_usecase.get_analysis_results(repository.id, commit_hash)
-            
+
             if not metrics_results:
+                hint = ("По коммиту нет метрик в БД. Сначала рассчитайте метрики: "
+                        "вкладка «Метрики» → кнопка «Обновить».")
+                logger.error("Archaeologist: %s (repo=%s commit=%s)",
+                             hint, repository.id, commit_hash)
                 return {
                     "status": "error",
                     "message": "No metrics found for commit",
+                    "hint": hint,
                     "agent_id": agent_id
                 }
             
@@ -108,17 +117,37 @@ class RunArchaeologistUseCase:
             
             # Получаем diff для файлов
             changed_files = self._get_changed_files(repository, commit_hash)
+            logger.info("Archaeologist: изменённых файлов в коммите %s: %d",
+                        commit_hash[:8], len(changed_files))
             file_diffs = []
-            
+
             for file_path in changed_files[:5]:  # Ограничиваем до 5 файлов для анализа
                 file_diff = self.git_parser.get_file_diff(repository.id, commit_hash, file_path)
                 if file_diff:
                     file_diffs.append(self._format_file_diff(file_diff))
-            
+                else:
+                    logger.warning("Archaeologist: нет diff для %s", file_path)
+
+            # В последнем коммите может не быть поддерживаемых файлов
+            # (только .md/.txt) — берём полные тексты .py-файлов репозитория,
+            # иначе анализ всегда падал с "No file diffs available".
             if not file_diffs:
+                logger.warning(
+                    "Archaeologist: diff пуст, fallback на полные файлы репозитория")
+                file_diffs = self._get_full_file_contexts(repository, limit=5)
+
+            if not file_diffs:
+                hint = (
+                    "В последнем коммите нет Python-файлов для анализа, и в репозитории "
+                    "не найдено поддерживаемых файлов. Добавьте .py файлы или выберите "
+                    "другой коммит/ветку."
+                )
+                logger.error("Archaeologist: %s (repo=%s commit=%s changed=%d)",
+                             hint, repository.id, commit_hash, len(changed_files))
                 return {
                     "status": "error",
-                    "message": "No file diffs available",
+                    "message": f"No file diffs available for commit {commit_hash}",
+                    "hint": hint,
                     "agent_id": agent_id
                 }
             
@@ -153,10 +182,14 @@ class RunArchaeologistUseCase:
                 response_data = self._parse_llm_response(response_text)
                 
                 if isinstance(response_data, ErrorResponse):
+                    hint = ("Нейросеть ответила, но ответ не в нужном формате. "
+                            "Попробуйте ещё раз или смените модель.")
+                    logger.warning("Archaeologist: %s (%s)", hint, response_data.error)
                     return {
                         "status": "error",
                         "message": response_data.error,
                         "error_type": response_data.error_type,
+                        "hint": hint,
                         "agent_id": agent_id
                     }
                 
@@ -182,18 +215,22 @@ class RunArchaeologistUseCase:
                 }
                 
             except Exception as e:
+                hint = ("Нейросеть недоступна. Проверьте статус во вкладке «Чат» "
+                        "(кнопка «Проверить») и лог во вкладке «Анализ» → «Журнал».")
                 logger.error(f"Error during LLM generation: {e}")
                 return {
                     "status": "error",
                     "message": f"LLM generation failed: {str(e)}",
+                    "hint": hint,
                     "agent_id": agent_id
                 }
-            
+
         except Exception as e:
-            logger.error(f"Error in archaeologist analysis: {e}")
+            logger.error(f"Error in archaeologist analysis: {e}", exc_info=True)
             return {
                 "status": "error",
                 "message": f"Analysis failed: {str(e)}",
+                "hint": "Неожиданная ошибка анализа. Подробности — в журнале (вкладка «Анализ» → «Журнал», файл gmod.log).",
                 "agent_id": agent_id
             }
     
@@ -249,11 +286,11 @@ class RunArchaeologistUseCase:
     
     def _get_changed_files(self, repository: Repository, commit_hash: str) -> list:
         """Получение изменённых файлов.
-        
+
         Args:
             repository: Репозиторий
             commit_hash: Хеш коммита
-            
+
         Returns:
             Список изменённых файлов
         """
@@ -263,6 +300,54 @@ class RunArchaeologistUseCase:
         except Exception as e:
             logger.error(f"Error getting changed files: {e}")
             return []
+
+    def _get_full_file_contexts(self, repository: Repository, limit: int = 5) -> list:
+        """Полные тексты поддерживаемых файлов, когда diff коммита пуст.
+
+        Возвращает строки в том же формате, что _format_file_diff,
+        поэтому промпт менять не нужно.
+
+        Args:
+            repository: Репозиторий
+            limit: Максимум файлов
+
+        Returns:
+            Список текстовых контекстов
+        """
+        from pathlib import Path
+
+        contexts: list = []
+        try:
+            root = Path(repository.local_path)
+            if not root.is_dir():
+                logger.error("Archaeologist fallback: нет директории %s", root)
+                return contexts
+            for path in sorted(root.rglob("*")):
+                if len(contexts) >= limit:
+                    break
+                if not path.is_file():
+                    continue
+                try:
+                    rel_parts = path.relative_to(root).parts
+                except ValueError:
+                    continue
+                if any(p.startswith(".") for p in rel_parts):
+                    continue  # пропускаем .git и скрытые
+                rel = str(path.relative_to(root))
+                if not self.analyze_usecase._is_supported_file(rel):
+                    continue
+                try:
+                    content = path.read_text(encoding="utf-8", errors="ignore")[:2000]
+                except Exception as e:
+                    logger.warning("Archaeologist fallback: не читается %s: %s", rel, e)
+                    continue
+                if not content.strip():
+                    continue
+                contexts.append(f"File: {rel} (FULL FILE, diff коммита пуст)\n{content}")
+            logger.info("Archaeologist fallback: взято полных файлов: %d", len(contexts))
+        except Exception as e:
+            logger.error("Archaeologist fallback error: %s", e)
+        return contexts
     
     def _parse_llm_response(self, response_text: str):
         """Парсинг ответа LLM.

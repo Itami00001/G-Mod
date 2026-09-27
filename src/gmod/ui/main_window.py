@@ -2295,7 +2295,19 @@ class MainWindow(QMainWindow):
             None
         )
         scroll_layout.addWidget(architect_card)
-        
+
+        # Нижняя часть вкладки — в скролле с отступами, чтобы блоки
+        # (параметры, прогноз, валидатор, функции, журнал) не налеплялись
+        # друг на друга и не вылезали за границы.
+        lower_scroll = QScrollArea()
+        lower_scroll.setWidgetResizable(True)
+        lower_content = QWidget()
+        lower_layout = QVBoxLayout(lower_content)
+        lower_layout.setSpacing(12)
+        lower_layout.setContentsMargins(8, 8, 8, 8)
+        lower_scroll.setWidget(lower_content)
+        layout.addWidget(lower_scroll, 1)
+
         # Панель параметров (для активного режима)
         self.analysis_params_group = QGroupBox("Параметры анализа")
         params_layout = QFormLayout(self.analysis_params_group)
@@ -2377,8 +2389,8 @@ class MainWindow(QMainWindow):
         run_layout.addStretch()
         
         params_layout.addRow(run_layout)
-        
-        layout.addWidget(self.analysis_params_group)
+
+        lower_layout.addWidget(self.analysis_params_group)
 
         # --- Управление прогнозом: температура / токены / горизонт ---
         from gmod.config.settings import get_settings as _get_settings
@@ -2412,7 +2424,7 @@ class MainWindow(QMainWindow):
         self.forecast_label.setWordWrap(True)
         forecast_btn_row.addWidget(self.forecast_label, 1)
         forecast_layout.addRow(forecast_btn_row)
-        layout.addWidget(forecast_group)
+        lower_layout.addWidget(forecast_group)
 
         # --- Валидатор с 0: эпохи + точность ---
         validator_group = QGroupBox("Нейросеть-валидатор (с нуля): эпохи и точность")
@@ -2442,7 +2454,7 @@ class MainWindow(QMainWindow):
         self.validator_accuracy_label.setWordWrap(True)
         val_btn_row.addWidget(self.validator_accuracy_label, 1)
         validator_layout.addRow(val_btn_row)
-        layout.addWidget(validator_group)
+        lower_layout.addWidget(validator_group)
 
         # --- Функции: выбор файлов/директорий + таблица функций × метрики ---
         funcs_group = QGroupBox("Функции: выбор файлов/директорий для анализа")
@@ -2480,12 +2492,66 @@ class MainWindow(QMainWindow):
         self.func_table.setModel(self.func_table_model)
         self.func_table.setMaximumHeight(220)
         funcs_layout.addWidget(self.func_table)
-        layout.addWidget(funcs_group)
+        lower_layout.addWidget(funcs_group)
+
+        # --- Журнал: видимые логи анализа, чтобы клиент знал что за ошибка ---
+        from PySide6.QtWidgets import QPlainTextEdit as _QLogEdit
+        log_group = QGroupBox("Журнал анализа (gmod.log — последние записи)")
+        log_layout = QVBoxLayout(log_group)
+        log_layout.setSpacing(6)
+        log_layout.setContentsMargins(8, 8, 8, 8)
+        self.analysis_log_view = _QLogEdit()
+        self.analysis_log_view.setReadOnly(True)
+        self.analysis_log_view.setMaximumBlockCount(300)
+        self.analysis_log_view.setMinimumHeight(140)
+        self.analysis_log_view.setFont(QFont("Consolas", 9))
+        self.analysis_log_view.setPlaceholderText("Здесь появятся логи запуска анализа...")
+        log_layout.addWidget(self.analysis_log_view)
+        log_btn_row = QHBoxLayout()
+        log_btn_row.setSpacing(8)
+        clear_log_btn = QPushButton("Очистить журнал")
+        clear_log_btn.clicked.connect(lambda: self.analysis_log_view.clear())
+        log_btn_row.addWidget(clear_log_btn)
+        open_log_btn2 = QPushButton("Открыть файл лога")
+        open_log_btn2.clicked.connect(self._open_log_file)
+        log_btn_row.addWidget(open_log_btn2)
+        log_btn_row.addStretch()
+        log_layout.addLayout(log_btn_row)
+        lower_layout.addWidget(log_group)
+        lower_layout.addStretch()
+        self._attach_analysis_log_handler()
 
         # Первичное обновление точности валидатора
         QTimer.singleShot(0, self._refresh_validator_accuracy)
 
         return analysis_tab
+
+    def _attach_analysis_log_handler(self) -> None:
+        """Подключение логов Python к виджету журнала (один раз)."""
+        if getattr(self, "_qt_log_attached", False):
+            return
+        try:
+            from PySide6.QtCore import QTimer as _QTimer
+
+            view = self.analysis_log_view
+
+            class _QtLogHandler(logging.Handler):
+                def emit(self_handler, record) -> None:
+                    try:
+                        msg = self_handler.format(record)
+                        _QTimer.singleShot(0, lambda m=msg: view.appendPlainText(m[-800:]))
+                    except Exception:
+                        pass
+
+            handler = _QtLogHandler()
+            handler.setLevel(logging.INFO)
+            handler.setFormatter(logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s", "%H:%M:%S"))
+            logging.getLogger().addHandler(handler)
+            self._qt_log_attached = True
+            logger.info("Журнал анализа подключён")
+        except Exception as e:
+            logger.error("Не удалось подключить журнал: %s", e)
     
     def _create_mode_card(self, title: str, description: str, active: bool, callback) -> QWidget:
         """Создание карточки режима."""
@@ -2670,23 +2736,38 @@ class MainWindow(QMainWindow):
             self.analysis_progress.setText(f"Ошибка: {e}")
             self.run_analysis_btn.setEnabled(True)
     
+    def _analysis_error_text(self, result: dict) -> str:
+        """Техническая ошибка + человеческий хинт для показа клиенту."""
+        msg = result.get("message", "Unknown")
+        hint = result.get("hint", "")
+        text = f"Ошибка: {msg}"
+        if hint:
+            text += f"\nЧто делать: {hint}"
+        return text
+
     def _on_analysis_finished(self, result: dict) -> None:
         """Обработка завершения анализа."""
         self.run_analysis_btn.setEnabled(True)
-        
+
         if result.get("status") == "success":
             self.analysis_progress.setText(f"Готово! Отчёт #{result.get('report_id')}, Риск: {result.get('analysis', {}).get('risk_score', 'N/A')}/10")
-            
+            logger.info("Анализ завершён: отчёт #%s", result.get("report_id"))
+
             # Переключаемся на вкладку отчётов
             self._switch_to_tab("Отчёты")
             self._refresh_reports()
         else:
-            self.analysis_progress.setText(f"Ошибка: {result.get('message', 'Unknown')}")
-    
+            text = self._analysis_error_text(result)
+            self.analysis_progress.setText(text)
+            self.status_bar.showMessage(text.split("\n")[0])
+            logger.error("Анализ завершился ошибкой: %s", text)
+
     def _on_analysis_error(self, error: str) -> None:
         """Обработка ошибки анализа."""
         self.run_analysis_btn.setEnabled(True)
-        self.analysis_progress.setText(f"Ошибка: {error}")
+        self.analysis_progress.setText(f"Ошибка: {error}\nПодробности — в журнале ниже.")
+        self.status_bar.showMessage(f"Ошибка анализа: {error}")
+        logger.error("Ошибка потока анализа: %s", error)
 
     # ============ Валидатор с 0 / точность / прогноз / функции ============
 
@@ -4056,7 +4137,12 @@ class MainWindow(QMainWindow):
             
             self.chat_history.append("\nAI: " + "\n".join(response_parts))
         else:
-            self.chat_history.append(f"\nAI: Ошибка: {result.get('message', 'Unknown')}")
+            err_text = f"\nAI: Ошибка: {result.get('message', 'Unknown')}"
+            if result.get("hint"):
+                err_text += f"\nЧто делать: {result['hint']}"
+            err_text += "\n(подробности — вкладка «Анализ» → «Журнал»)"
+            self.chat_history.append(err_text)
+            logger.error("Чат: %s", result.get("message", "Unknown"))
 
         self.chat_history.verticalScrollBar().setValue(
             self.chat_history.verticalScrollBar().maximum()

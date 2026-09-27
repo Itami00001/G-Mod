@@ -302,6 +302,12 @@ class AnalyzeRepositoryUseCase:
                 for f in sorted(p.rglob("*")):
                     if f.is_file():
                         try:
+                            rel_parts = f.relative_to(repo_root).parts
+                        except ValueError:
+                            continue
+                        if any(part.startswith(".") for part in rel_parts):
+                            continue  # пропускаем .git и скрытые
+                        try:
                             files.append(str(f.relative_to(repo_root)))
                         except ValueError:
                             files.append(str(f))
