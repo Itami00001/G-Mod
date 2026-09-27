@@ -30,6 +30,11 @@ except ImportError:
 litellm_data_files = collect_data_files('litellm')
 pyqtgraph_data_files = collect_data_files('pyqtgraph')
 pyqtgraph_hiddenimports = collect_submodules('pyqtgraph')
+# tiktoken: кодировки (cl100k_base и др.) лежат в отдельном пакете
+# tiktoken_ext, который litellm подхватывает через entry points, —
+# без явного сбора frozen-exe падает "Unknown encoding cl100k_base".
+tiktoken_data_files = collect_data_files('tiktoken')
+tiktoken_ext_data_files = collect_data_files('tiktoken_ext')
 
 a = Analysis(
     ["main.py"],
@@ -39,8 +44,11 @@ a = Analysis(
         ("data/config.yaml", "data"),
         ("README.md", "."),
         ("assets/icon.ico", "."),
-    ] + tree_sitter_grammars + litellm_data_files + pyqtgraph_data_files,
+    ] + tree_sitter_grammars + litellm_data_files + pyqtgraph_data_files
+    + tiktoken_data_files + tiktoken_ext_data_files,
     hiddenimports=[
+        # Токенизаторы (entry-point плагины tiktoken_ext не видны анализатору)
+        "tiktoken", "tiktoken.registry", "tiktoken_ext", "tiktoken_ext.openai_public",
         # Core UI
         "gmod.ui.main_window",
         "PySide6.QtWidgets", "PySide6.QtCore", "PySide6.QtGui",

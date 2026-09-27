@@ -6,10 +6,10 @@ from typing import Optional, Dict, Any
 try:
     import litellm
     LITELLM_AVAILABLE = True
-except ImportError:
+except Exception as _litellm_import_error:  # noqa: BLE001 — в frozen-exe tiktoken падает с ValueError
     litellm = None  # type: ignore
     LITELLM_AVAILABLE = False
-    logging.warning("litellm not available, Groq provider will not work")
+    logging.warning("litellm not available, Groq provider will not work: %s", _litellm_import_error)
 
 from gmod.infrastructure.llm.base import BaseLLMProvider
 
