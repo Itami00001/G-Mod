@@ -3840,8 +3840,10 @@ class MainWindow(QMainWindow):
 
             parser = GitParser()
             if is_clone:
-                # Клонирование по URL
-                local_base = Path(self.db.load_workspace_state("repos_base") or "data/repos")
+                # Клонирование по URL — в %APPDATA%\GMod\repos, а не в CWD,
+                # чтобы не засорять папку exe (dist) и не ломать пересборку.
+                from gmod.config.constants import DATA_DIR
+                local_base = Path(self.db.load_workspace_state("repos_base") or str(DATA_DIR / "repos"))
                 local_base.mkdir(parents=True, exist_ok=True)
                 self.status_bar.showMessage("Клонирование репозитория...")
                 QApplication.processEvents()
