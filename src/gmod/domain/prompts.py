@@ -42,7 +42,13 @@ Please provide your analysis in the following JSON format:
     "performance_impact": "<high/medium/low>",
     "complexity_change": "<increased/decreased/unchanged>",
     "suggested_actions": ["<list of specific actions>"]
-}}"""
+}}
+
+**Strict requirements (model MUST follow):**
+- "reason" and "recommendation" MUST be plain JSON strings (never arrays).
+  If several recommendations — join them into ONE string separated by "; ".
+- Write "reason" and "recommendation" in Russian.
+- Respond with ONLY the JSON object, no surrounding text."""
 
 
 SUMMARIZATION_PROMPT = """Summarize the following conversation between a user and an AI assistant about code analysis.

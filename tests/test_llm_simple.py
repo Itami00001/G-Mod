@@ -63,3 +63,40 @@ def test_error_response_creation():
     
     assert response.error == "Test error"
     assert response.error_type == "test_type"
+
+
+def test_recommendation_list_coerced_to_str():
+    """llama3.1:8b отдаёт recommendation списком — схема склеивает, а не падает."""
+    from gmod.domain.schemas import ArchaeologistResponse
+
+    response = ArchaeologistResponse(
+        risk_score=6,
+        reason="reason",
+        recommendation=["Optimize database queries", "implement caching"],
+        performance_impact="medium",
+    )
+
+    assert isinstance(response.recommendation, str)
+    assert "Optimize database queries" in response.recommendation
+
+
+def test_sloppy_model_types_coerced():
+    """Строковые risk/confidence, одиночные affected_units — всё приводится."""
+    from gmod.domain.schemas import ArchaeologistResponse
+
+    response = ArchaeologistResponse(
+        risk_score="7/10",
+        reason=["a", "b"],
+        recommendation="fix it",
+        affected_units="single_unit",
+        confidence="85%",
+        performance_impact="HIGH",
+        complexity_change="increased",
+        suggested_actions="do this",
+    )
+
+    assert response.risk_score == 7
+    assert response.affected_units == ["single_unit"]
+    assert response.confidence == 0.85
+    assert response.performance_impact == "высокое"
+    assert response.suggested_actions == ["do this"]
