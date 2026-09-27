@@ -823,13 +823,10 @@ class MainWindow(QMainWindow):
             usecase = AnalyzeRepositoryUseCase(diff_only=diff_only)
             result = usecase.execute(repo, commit_hash)
             
-            if result.get("status") == "success":
-                self.metrics_status.setText(
-                    f"Анализ завершён: {result['files_analyzed']} файлов, "
-                    f"{result['units_analyzed']} единиц, {result['metrics_computed']} метрик"
-                )
+            if result.get('status') == 'success' and result.get('metrics_computed', 0) > 0:
+                self.metrics_status.setText('Метрики рассчитаны успешно: {0} файлов, {1} единиц, {2} метрик'.format(result['files_analyzed'], result['units_analyzed'], result['metrics_computed']))
             else:
-                self.metrics_status.setText(f"Ошибка анализа: {result.get('message', 'Unknown')}")
+                self.metrics_status.setText('Метрики не рассчитаны: {0}'.format(result.get('message', 'нет данных')))
             
             # Обновляем таблицу метрик
             self._refresh_metrics()

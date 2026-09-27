@@ -30,6 +30,9 @@ class OllamaProvider(BaseLLMProvider):
         super().__init__(api_key, config)
         self.url = config.get("url", "http://localhost:11434") if config else "http://localhost:11434"
         self.model = config.get("model", "llama3.2:3b") if config else "llama3.2:3b"
+        self._local_mode = self.url.rstrip('/').lower() in {
+            "http://localhost:11434", "http://127.0.0.1:11434",
+        }
         # api_key может прийти как в config, так и отдельным параметром
         if config and config.get("api_key") and not self.api_key:
             self.api_key = config.get("api_key")
@@ -76,7 +79,7 @@ class OllamaProvider(BaseLLMProvider):
                 max_tokens=max_tokens,
             )
             # Ollama Cloud требует Bearer-ключ; локальному серверу он не мешает.
-            if self.api_key:
+            if self.api_key and not self._local_mode:
                 completion_kwargs["api_key"] = self.api_key
             logger.info(
                 "Ollama: generate model=%s url=%s prompt_len=%d",
@@ -103,7 +106,7 @@ class OllamaProvider(BaseLLMProvider):
         try:
             import requests
             headers = {}
-            if self.api_key:
+            if self.api_key and not self._local_mode:
                 headers["Authorization"] = f"Bearer {self.api_key}"
             response = requests.get(f"{self.url}/api/tags", timeout=5, headers=headers)
             ok = response.status_code == 200
@@ -132,7 +135,7 @@ class OllamaProvider(BaseLLMProvider):
         try:
             import requests
             headers = {}
-            if self.api_key:
+            if self.api_key and not self._local_mode:
                 headers["Authorization"] = f"Bearer {self.api_key}"
             resp = requests.get(f"{self.url}/api/tags", timeout=5, headers=headers)
             if resp.status_code == 200:
@@ -157,7 +160,7 @@ class OllamaProvider(BaseLLMProvider):
         try:
             import requests
             headers = {}
-            if self.api_key:
+            if self.api_key and not self._local_mode:
                 headers["Authorization"] = f"Bearer {self.api_key}"
             response = requests.get(f"{self.url}/api/tags", timeout=5, headers=headers)
             if response.status_code == 200:

@@ -129,16 +129,78 @@ class LLMProviderFactory:
             try:
                 if provider.is_available():
                     logger.info(f"Using provider: {provider.get_name()}")
-                    return provider.generate(prompt, **kwargs)
+                    try:
+                        return provider.generate(prompt, **kwargs)
+                    except Exception as generate_error:
+                        # litellm падает на подсчёте токенов для некоторых
+                        # Ollama-моделей (нет токенизатора cl100k_base) —
+                        # обходим через нативный HTTP API Ollama.
+                        if isinstance(provider, OllamaProvider) and "cl100k_base" in str(generate_error):
+                            logger.warning(
+                                "litellm не смог вызвать Ollama (%s), "
+                                "пробую прямой HTTP-запрос к /api/generate",
+                                generate_error,
+                            )
+                            return self._direct_ollama_generate(provider, prompt, **kwargs)
+                        raise
             except Exception as e:
                 last_error = e
-                logger.warning(f"Provider {provider.get_name()} failed: {e}, trying next")
+                try:
+                    from gmod.infrastructure.llm.health import classify_exception
+                    reason, _msg = classify_exception(e)
+                except Exception:
+                    reason = "unknown"
+                logger.warning(f"Provider {provider.get_name()} failed ({reason}): {e}, trying next")
                 continue
         
         # Если все провайдеры недоступны
         error_msg = f"All LLM providers failed. Last error: {last_error}"
         logger.error(error_msg)
         raise RuntimeError(error_msg)
+    
+    @staticmethod
+    def _direct_ollama_generate(provider: OllamaProvider, prompt: str, **kwargs) -> str:
+        """Прямой запрос к нативному HTTP API Ollama (без litellm).
+        
+        Запасной путь, когда litellm не умеет посчитать токены для модели
+        (ошибка вида "cl100k_base").
+        
+        Args:
+            provider: Экземпляр OllamaProvider
+            prompt: Промпт для генерации
+            **kwargs: temperature / max_tokens
+            
+        Returns:
+            Сгенерированный текст
+        """
+        import requests
+
+        headers = {}
+        api_key = getattr(provider, "api_key", None)
+        local_mode = getattr(provider, "_local_mode", True)
+        if api_key and not local_mode:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        payload = {
+            "model": provider.model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": kwargs.get("temperature", 0.7),
+                "num_predict": kwargs.get("max_tokens", 2000),
+            },
+        }
+        response = requests.post(
+            f"{provider.url.rstrip('/')}/api/generate",
+            json=payload,
+            headers=headers,
+            timeout=180,
+        )
+        response.raise_for_status()
+        content = response.json().get("response", "")
+        if not content:
+            raise RuntimeError("Ollama returned an empty response")
+        return content
     
     def get_available_providers(self) -> List[str]:
         """Получение списка доступных провайдеров.
