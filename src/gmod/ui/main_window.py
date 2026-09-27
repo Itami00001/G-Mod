@@ -1080,7 +1080,7 @@ class MainWindow(QMainWindow):
                 self.provider_combo.addItems(["Ollama", "Groq", "Gemini"])
                 self.provider_model_map = {
                     "Ollama": "llama3.2:3b",
-                    "Groq": "llama-3.3-70b-versatile",
+                    "Groq": "openai/gpt-oss-20b",
                     "Gemini": "gemini-2.5-flash"
                 }
             
@@ -1095,7 +1095,7 @@ class MainWindow(QMainWindow):
             self.provider_combo.addItems(["Ollama", "Groq", "Gemini"])
             self.provider_model_map = {
                 "Ollama": "llama3.2:3b",
-                "Groq": "llama-3.3-70b-versatile",
+                "Groq": "openai/gpt-oss-20b",
                 "Gemini": "gemini-2.5-flash"
             }
     
@@ -1108,9 +1108,9 @@ class MainWindow(QMainWindow):
         candidates = []
         if base_model:
             candidates.append(base_model)
-        # Только реально предоставляемые провайдерами модели (09.2026).
-        # Groq production: llama-3.1-8b-instant, llama-3.3-70b-versatile,
-        #   openai/gpt-oss-120b, openai/gpt-oss-20b.
+        # Только реально предоставляемые провайдерами модели.
+        # Groq проверен живым API 27.09.2026 (ключ пользователя):
+        #   openai/gpt-oss-20b, openai/gpt-oss-120b, qwen/qwen3.8-27b.
         # Gemini: gemini-2.5-flash / lite / pro, gemini-3.5-flash.
         # Ollama: точный список подтягивается с сервера (кнопка 🔄 / автовыбор).
         if provider_name == "Ollama":
@@ -1118,8 +1118,7 @@ class MainWindow(QMainWindow):
             # Асинхронно подгружаем реальные модели с сервера
             QTimer.singleShot(0, self._fetch_ollama_models_for_chat)
         elif provider_name == "Groq":
-            candidates += ["llama-3.3-70b-versatile", "llama-3.1-8b-instant",
-                           "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+            candidates += ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
             QTimer.singleShot(0, self._fetch_groq_models_for_chat)
         elif provider_name == "Gemini":
             candidates += ["gemini-2.5-flash", "gemini-2.5-flash-lite",
@@ -3163,8 +3162,8 @@ class MainWindow(QMainWindow):
         groq_row = QHBoxLayout()
         W["groq_model"] = QComboBox()
         W["groq_model"].setEditable(True)
-        W["groq_model"].addItems(["llama-3.3-70b-versatile", "llama-3.1-8b-instant",
-                                  "openai/gpt-oss-120b", "openai/gpt-oss-20b"])
+        W["groq_model"].addItems(["openai/gpt-oss-20b", "openai/gpt-oss-120b",
+                                  "qwen/qwen3.8-27b"])
         W["groq_model"].setCurrentText(settings.groq_model)
         groq_row.addWidget(W["groq_model"], 1)
         groq_refresh = QPushButton("🔄")
@@ -3427,7 +3426,7 @@ class MainWindow(QMainWindow):
                         item["api_key"] = entry["api_key"].text().strip()
                     elif pname == "groq":
                         item["api_key"] = entry["api_key"].text().strip()
-                        item["model"] = W["groq_model"].currentText().strip() or "llama-3.3-70b-versatile"
+                        item["model"] = W["groq_model"].currentText().strip() or "openai/gpt-oss-20b"
                     else:
                         item["api_key"] = entry["api_key"].text().strip()
                         item["model"] = W["gemini_model"].currentText().strip() or "gemini-2.5-flash"

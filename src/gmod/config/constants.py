@@ -33,14 +33,15 @@ DEFAULT_MESSAGE_LIMIT = 7
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_MAX_TOKENS = 2000
 
-# Дефолтные модели — только реально предоставляемые провайдерами (09.2026):
-# Groq production: llama-3.1-8b-instant, llama-3.3-70b-versatile,
-#   openai/gpt-oss-120b, openai/gpt-oss-20b (старые llama3-*-8192 отключены)
+# Дефолтные модели — только реально предоставляемые провайдерами.
+# Проверено живым API 27.09.2026:
+# Groq (по ключу пользователя): openai/gpt-oss-20b, openai/gpt-oss-120b,
+#   qwen/qwen3.8-27b (llama-3.x этому ключу недоступны — 404)
 # Gemini: gemini-2.5-flash / lite / pro, gemini-3.5-flash
 #   (gemini-*-1.5, gemini-2.0-flash, gemini-flash/pro — отключены)
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 
 # Дефолтные API-ключи НЕ хранятся в коде (GitHub push-protection их блокирует).
