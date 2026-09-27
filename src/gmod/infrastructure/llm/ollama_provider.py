@@ -156,7 +156,10 @@ class OllamaProvider(BaseLLMProvider):
         
         try:
             import requests
-            response = requests.get(f"{self.url}/api/tags", timeout=5)
+            headers = {}
+            if self.api_key:
+                headers["Authorization"] = f"Bearer {self.api_key}"
+            response = requests.get(f"{self.url}/api/tags", timeout=5, headers=headers)
             if response.status_code == 200:
                 models = response.json().get("models", [])
                 return [model["name"] for model in models]

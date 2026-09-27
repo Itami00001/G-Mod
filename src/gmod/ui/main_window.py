@@ -2045,6 +2045,8 @@ class MainWindow(QMainWindow):
 
         view = QTextEdit()
         view.setReadOnly(True)
+        view.setAcceptRichText(False)
+        view.setLineWrapMode(QTextEdit.WidgetWidth)
         layout.addWidget(view, 1)
 
         def _refresh() -> None:
@@ -2054,7 +2056,36 @@ class MainWindow(QMainWindow):
                     view.setText("Репозиторий не выбран. Загрузите репозиторий в правой шторке.")
                     return
                 repo_path = self._get_repo_path(repo_id)
-                lines = [f"Проект: {repo_id}", f"Путь: {repo_path or '?'}", ""]
+                lines = [
+                    'ОБЗОР ПРОЕКТА', '=' * 60,
+                    f'Репозиторий: {repo_id}', 'Путь: ' + (repo_path or '?'), '',
+                    '1. НЕЙРОСЕТЬ',
+                    '- Основной провайдер: Ollama через localhost (http://localhost:11434).',
+                    '- Проверка: GET /api/tags; генерация — выбранная модель.',
+                    '- Локальный API Key не нужен; Cloud-ключ передаётся как Bearer.',
+                    '- Точность = правильные оценки / все оценки.',
+                    '- Валидатор: p=sigmoid(w·x+b), sigmoid(z)=1/(1+e^(-z)).',
+                    '- Обучение: градиентный спуск; epochs и learning rate задаёт пользователь.', '',
+                    '2. МЕТРИКИ И АНАЛИЗ',
+                    '- Путь → парсер → функции/классы → метрики → SQLite → таблица.',
+                    '- Complexity: независимые пути; базово 1 + число ветвлений.',
+                    '- LOC: строки кода; Function Length: строки функции.',
+                    '- Coupling: зависимости; Fan-in/Fan-out: входящие/исходящие связи.',
+                    '- Churn: объём изменений; Change Frequency: частота изменений Git.',
+                    '- Таблица: файл, функция/класс, метрика, числовое значение.', '',
+                    '3. АРХИТЕКТУРНЫЕ РЕШЕНИЯ',
+                    '- Domain — сущности; Use Cases — сценарии; Infrastructure — Git/LLM/БД.',
+                    '- UI отвечает за отображение; вычисления находятся в use cases и метриках.',
+                    '- Factory выбирает компоненты, fallback переключает LLM при сбое.', '',
+                    '4. ТЕРМИНЫ ПРОГРАММНОЙ ИНЖЕНЕРИИ',
+                    '- Сцепление: зависимость модулей; меньше — проще сопровождение.',
+                    '- Связность: единство ответственности модуля; больше — лучше.',
+                    '- Технический долг: будущие затраты из-за компромиссных решений.',
+                    '- Code smell: признак потенциальной проблемы дизайна.',
+                    '- Регрессионный тест: проверка, что изменения не сломали старое поведение.', '',
+                ]
+                # Статистика репозитория добавляется ниже
+                lines.extend([f"Репозиторий: {repo_id}", "Путь: " + (repo_path or "?"), ""])
                 with self.db.get_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(
