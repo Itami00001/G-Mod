@@ -132,10 +132,10 @@ class LLMProviderFactory:
                     try:
                         return provider.generate(prompt, **kwargs)
                     except Exception as generate_error:
-                        # litellm падает на подсчёте токенов для некоторых
-                        # Ollama-моделей (нет токенизатора cl100k_base) —
-                        # обходим через нативный HTTP API Ollama.
-                        if isinstance(provider, OllamaProvider) and "cl100k_base" in str(generate_error):
+                        # litellm может падать до сетевого запроса
+                        # (tiktoken/cl100k_base и др.) — для Ollama обходим
+                        # через нативный HTTP API.
+                        if isinstance(provider, OllamaProvider) and self._is_litellm_error(generate_error):
                             logger.warning(
                                 "litellm не смог вызвать Ollama (%s), "
                                 "пробую прямой HTTP-запрос к /api/generate",
@@ -158,6 +158,20 @@ class LLMProviderFactory:
         logger.error(error_msg)
         raise RuntimeError(error_msg)
     
+    @staticmethod
+    def _is_litellm_error(error: Exception) -> bool:
+        """Похожа ли ошибка на сбой litellm/tiktoken до сетевого запроса.
+
+        Примеры: "Unknown encoding cl100k_base", ошибки tiktoken,
+        исключения из пакета litellm. Сетевые ошибки (connection/timeout)
+        и 404 модели сюда НЕ входят — их повторять бессмысленно.
+        """
+        if type(error).__module__.split(".")[0] == "litellm":
+            return True
+        text = str(error).lower()
+        markers = ("cl100k_base", "tiktoken", "unknown encoding", "tokenizer", "encode")
+        return any(m in text for m in markers)
+
     @staticmethod
     def _direct_ollama_generate(provider: OllamaProvider, prompt: str, **kwargs) -> str:
         """Прямой запрос к нативному HTTP API Ollama (без litellm).

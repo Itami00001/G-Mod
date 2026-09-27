@@ -270,6 +270,10 @@ class MainWindow(QMainWindow):
         metrics_btn = QPushButton("Метрики")
         metrics_btn.clicked.connect(lambda: self._switch_to_tab("Метрики"))
         analysis_layout.addWidget(metrics_btn)
+
+        graph_btn = QPushButton("Граф")
+        graph_btn.clicked.connect(lambda: self._switch_to_tab("Граф"))
+        analysis_layout.addWidget(graph_btn)
         
         modes_btn = QPushButton("Режимы работы")
         modes_btn.clicked.connect(lambda: self._switch_to_tab("Анализ"))
@@ -782,58 +786,81 @@ class MainWindow(QMainWindow):
         if not repo_id:
             self.metrics_status.setText("Репозиторий не выбран. Загрузите репозиторий в правой шторке.")
             return
-        
+
         repo_path = self._get_repo_path(repo_id)
         if not repo_path:
-            self.metrics_status.setText("Путь к репозиторию не найден.")
+            self.metrics_status.setText("Метрики не получилось рассчитать: путь к репозиторию не найден.")
             return
-        
+
         # Получаем последний коммит
         from gmod.infrastructure.git.git_parser import GitParser
         git_parser = GitParser()
-        commits = git_parser.get_commits(repo_id, limit=1, repo_path=repo_path)
-        if not commits:
-            self.metrics_status.setText("Коммиты не найдены.")
+        try:
+            commits = git_parser.get_commits(repo_id, limit=1, repo_path=repo_path)
+        except Exception as e:
+            logger.error(f"Error getting commits: {e}")
+            self.metrics_status.setText(f"Метрики не получилось рассчитать: {e}")
             return
-        
+        if not commits:
+            self.metrics_status.setText("Метрики не получилось рассчитать: коммиты не найдены.")
+            return
+
         commit_hash = commits[0].hash
-        unit_type = self.metrics_type_filter.currentText()
-        if unit_type == "Все":
-            unit_type = None
-        
-        self.metrics_status.setText("Анализ репозитория...")
+
+        self.metrics_status.setText("Метрики в обработке...")
+        self.status_bar.showMessage("Метрики в обработке...")
         QApplication.processEvents()
-        
+
         try:
             from gmod.domain.entities import Repository
             from gmod.usecases.analyze_repository import AnalyzeRepositoryUseCase
-            
+
             repo = Repository(
                 id=repo_id,
                 url="",
                 local_path=repo_path,
                 name=repo_id
             )
-            
+
             # Используем diff_only настройку из конфига
             from gmod.config.settings import get_settings
             settings = get_settings()
             diff_only = settings.analysis_depth == "diff"
-            
+
             usecase = AnalyzeRepositoryUseCase(diff_only=diff_only)
             result = usecase.execute(repo, commit_hash)
-            
+
+            # В последнем коммите может не быть поддерживаемых файлов
+            # (только .md/.txt и т.п.) — тогда сканируем весь репозиторий,
+            # чтобы вкладка не оставалась пустой.
+            if result.get("status") != "success" or result.get("metrics_computed", 0) == 0:
+                logger.info("Метрики: diff-анализ пуст (%s), запускаю полное сканирование",
+                            result.get("message", "нет данных"))
+                self.metrics_status.setText("Метрики в обработке (полное сканирование)...")
+                QApplication.processEvents()
+                result = usecase.analyze_paths(repo, commit_hash, ["."])
+
             if result.get('status') == 'success' and result.get('metrics_computed', 0) > 0:
-                self.metrics_status.setText('Метрики рассчитаны успешно: {0} файлов, {1} единиц, {2} метрик'.format(result['files_analyzed'], result['units_analyzed'], result['metrics_computed']))
+                msg = ('Метрики рассчитаны: {0} файлов, {1} единиц, {2} метрик'.format(
+                    result['files_analyzed'], result['units_analyzed'], result['metrics_computed']))
+                self.metrics_status.setText(msg)
+                self.status_bar.showMessage(msg)
+                logger.info("Метрики: %s", msg)
             else:
-                self.metrics_status.setText('Метрики не рассчитаны: {0}'.format(result.get('message', 'нет данных')))
-            
+                err = result.get('message', 'нет данных')
+                if result.get('errors'):
+                    err = "; ".join(str(x) for x in result['errors'][:3])
+                self.metrics_status.setText(f'Метрики не получилось рассчитать: {err}')
+                self.status_bar.showMessage("Метрики не получилось рассчитать")
+                logger.warning("Метрики не рассчитаны: %s", err)
+
             # Обновляем таблицу метрик
             self._refresh_metrics()
-            
+
         except Exception as e:
-            logger.error(f"Error running analysis: {e}")
-            self.metrics_status.setText(f"Ошибка: {e}")
+            logger.error(f"Error running analysis: {e}", exc_info=True)
+            self.metrics_status.setText(f"Метрики не получилось рассчитать: {e}")
+            self.status_bar.showMessage("Метрики не получилось рассчитать")
 
     def _get_current_repo_id(self) -> Optional[str]:
         """Получение ID текущего репозитория."""
@@ -1053,8 +1080,8 @@ class MainWindow(QMainWindow):
                 self.provider_combo.addItems(["Ollama", "Groq", "Gemini"])
                 self.provider_model_map = {
                     "Ollama": "llama3.2:3b",
-                    "Groq": "llama3-8b-8192",
-                    "Gemini": "gemini-flash"
+                    "Groq": "llama-3.3-70b-versatile",
+                    "Gemini": "gemini-2.5-flash"
                 }
             
             # Подключаем сигнал смены провайдера
@@ -1068,8 +1095,8 @@ class MainWindow(QMainWindow):
             self.provider_combo.addItems(["Ollama", "Groq", "Gemini"])
             self.provider_model_map = {
                 "Ollama": "llama3.2:3b",
-                "Groq": "llama3-8b-8192",
-                "Gemini": "gemini-flash"
+                "Groq": "llama-3.3-70b-versatile",
+                "Gemini": "gemini-2.5-flash"
             }
     
     def _on_provider_changed(self, provider_name: str) -> None:
@@ -1081,15 +1108,23 @@ class MainWindow(QMainWindow):
         candidates = []
         if base_model:
             candidates.append(base_model)
-        # Можно добавить дополнительные модели для провайдера
+        # Только реально предоставляемые провайдерами модели (09.2026).
+        # Groq production: llama-3.1-8b-instant, llama-3.3-70b-versatile,
+        #   openai/gpt-oss-120b, openai/gpt-oss-20b.
+        # Gemini: gemini-2.5-flash / lite / pro, gemini-3.5-flash.
+        # Ollama: точный список подтягивается с сервера (кнопка 🔄 / автовыбор).
         if provider_name == "Ollama":
             candidates += ["llama3.2:3b", "llama3.1:8b", "codellama:7b", "mistral:7b"]
             # Асинхронно подгружаем реальные модели с сервера
             QTimer.singleShot(0, self._fetch_ollama_models_for_chat)
         elif provider_name == "Groq":
-            candidates += ["llama3-8b-8192", "llama3-70b-8192", "mixtral-8x7b-32768"]
+            candidates += ["llama-3.3-70b-versatile", "llama-3.1-8b-instant",
+                           "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+            QTimer.singleShot(0, self._fetch_groq_models_for_chat)
         elif provider_name == "Gemini":
-            candidates += ["gemini-flash", "gemini-pro", "gemini-1.5-flash"]
+            candidates += ["gemini-2.5-flash", "gemini-2.5-flash-lite",
+                           "gemini-2.5-pro", "gemini-3.5-flash"]
+            QTimer.singleShot(0, self._fetch_gemini_models_for_chat)
         for m in candidates:
             if m and m not in seen:
                 self.model_combo.addItem(m)
@@ -1103,6 +1138,77 @@ class MainWindow(QMainWindow):
             pass
         if hasattr(self, "llm_status_label"):
             QTimer.singleShot(0, self._on_check_llm_status)
+
+    def _fetch_groq_models_for_chat(self) -> None:
+        """Подтянуть список моделей Groq (GET /openai/v1/models по API-ключу)."""
+        try:
+            from gmod.config.settings import get_settings
+            settings = get_settings()
+            key = settings.groq_api_key.strip()
+            if not key:
+                return
+            import requests
+            resp = requests.get("https://api.groq.com/openai/v1/models",
+                                headers={"Authorization": f"Bearer {key}"}, timeout=10)
+            if resp.status_code != 200:
+                logger.warning("Groq models fetch: HTTP %s", resp.status_code)
+                return
+            names = sorted(m.get("id", "") for m in resp.json().get("data", []) if m.get("id"))
+            if not names:
+                return
+            try:
+                if self.provider_combo.currentText() != "Groq":
+                    return
+            except Exception:
+                return
+            current = self.model_combo.currentText()
+            self.model_combo.blockSignals(True)
+            self.model_combo.clear()
+            self.model_combo.addItems(names)
+            if current in names:
+                self.model_combo.setCurrentText(current)
+            self.model_combo.blockSignals(False)
+            logger.info("Groq: загружено %d моделей для чата", len(names))
+        except Exception as e:
+            logger.debug("Groq models fetch failed: %s", e)
+
+    def _fetch_gemini_models_for_chat(self) -> None:
+        """Подтянуть список моделей Gemini (v1beta/models по API-ключу)."""
+        try:
+            from gmod.config.settings import get_settings
+            settings = get_settings()
+            key = settings.gemini_api_key.strip()
+            if not key:
+                return
+            import requests
+            resp = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
+                                params={"key": key}, timeout=10)
+            if resp.status_code != 200:
+                logger.warning("Gemini models fetch: HTTP %s", resp.status_code)
+                return
+            names = sorted(
+                m.get("name", "").replace("models/", "")
+                for m in resp.json().get("models", []) if m.get("name"))
+            # Только текстовые генеративные модели, без embedding/tts/image/live.
+            bad = ("embed", "tts", "image", "live", "audio", "translat", "veo", "research")
+            names = [n for n in names if not any(b in n for b in bad)]
+            if not names:
+                return
+            try:
+                if self.provider_combo.currentText() != "Gemini":
+                    return
+            except Exception:
+                return
+            current = self.model_combo.currentText()
+            self.model_combo.blockSignals(True)
+            self.model_combo.clear()
+            self.model_combo.addItems(names)
+            if current in names:
+                self.model_combo.setCurrentText(current)
+            self.model_combo.blockSignals(False)
+            logger.info("Gemini: загружено %d моделей для чата", len(names))
+        except Exception as e:
+            logger.debug("Gemini models fetch failed: %s", e)
 
     def _fetch_ollama_models_for_chat(self) -> None:
         """Получить модели с Ollama для комбобокса чата."""
@@ -3052,11 +3158,34 @@ class MainWindow(QMainWindow):
         p2 = QWidget()
         p2_layout = QFormLayout(p2)
         W["ollama_model"] = QLineEdit(settings.ollama_model)
-        W["groq_model"] = QLineEdit(settings.groq_model)
-        W["gemini_model"] = QLineEdit(settings.gemini_model)
         p2_layout.addRow("Ollama (по умолчанию):", W["ollama_model"])
-        p2_layout.addRow("Groq (по умолчанию):", W["groq_model"])
-        p2_layout.addRow("Gemini (по умолчанию):", W["gemini_model"])
+        # Groq/Gemini: редактируемый список + кнопка обновления с сервера.
+        groq_row = QHBoxLayout()
+        W["groq_model"] = QComboBox()
+        W["groq_model"].setEditable(True)
+        W["groq_model"].addItems(["llama-3.3-70b-versatile", "llama-3.1-8b-instant",
+                                  "openai/gpt-oss-120b", "openai/gpt-oss-20b"])
+        W["groq_model"].setCurrentText(settings.groq_model)
+        groq_row.addWidget(W["groq_model"], 1)
+        groq_refresh = QPushButton("🔄")
+        groq_refresh.setMaximumWidth(40)
+        groq_refresh.setToolTip("Обновить список моделей с Groq API")
+        groq_refresh.clicked.connect(lambda _c: self._fetch_groq_models_for_settings(tab))
+        groq_row.addWidget(groq_refresh)
+        p2_layout.addRow("Groq (по умолчанию):", groq_row)
+        gemini_row = QHBoxLayout()
+        W["gemini_model"] = QComboBox()
+        W["gemini_model"].setEditable(True)
+        W["gemini_model"].addItems(["gemini-2.5-flash", "gemini-2.5-flash-lite",
+                                    "gemini-2.5-pro", "gemini-3.5-flash"])
+        W["gemini_model"].setCurrentText(settings.gemini_model)
+        gemini_row.addWidget(W["gemini_model"], 1)
+        gemini_refresh = QPushButton("🔄")
+        gemini_refresh.setMaximumWidth(40)
+        gemini_refresh.setToolTip("Обновить список моделей с Gemini API")
+        gemini_refresh.clicked.connect(lambda _c: self._fetch_gemini_models_for_settings(tab))
+        gemini_row.addWidget(gemini_refresh)
+        p2_layout.addRow("Gemini (по умолчанию):", gemini_row)
         W["behavior_model"] = QComboBox()
         W["behavior_model"].addItems(["archaeologist", "detective", "architect"])
         W["behavior_model"].setCurrentText(
@@ -3298,10 +3427,10 @@ class MainWindow(QMainWindow):
                         item["api_key"] = entry["api_key"].text().strip()
                     elif pname == "groq":
                         item["api_key"] = entry["api_key"].text().strip()
-                        item["model"] = W["groq_model"].text().strip() or "llama3-8b-8192"
+                        item["model"] = W["groq_model"].currentText().strip() or "llama-3.3-70b-versatile"
                     else:
                         item["api_key"] = entry["api_key"].text().strip()
-                        item["model"] = W["gemini_model"].text().strip() or "gemini-flash"
+                        item["model"] = W["gemini_model"].currentText().strip() or "gemini-2.5-flash"
                     providers.append(item)
                     _save_to_sqlite("llm_provider", pname + ".enabled", item["enabled"])
                 data.setdefault("llm", {})["providers"] = providers
@@ -3491,6 +3620,90 @@ class MainWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
 
+    def _fill_settings_combo(self, key: str, names: list, parent_tab) -> None:
+        """Заполнить комбобокс модели на вкладке настроек с сохранением выбора."""
+        from PySide6.QtWidgets import QMessageBox
+
+        combo = self._settings_W.get(key)
+        if combo is None:
+            return
+        current = combo.currentText()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(names)
+        combo.setCurrentText(current if current in names else names[0])
+        combo.blockSignals(False)
+        QMessageBox.information(parent_tab, "Готово", f"Получено моделей: {len(names)}")
+
+    def _fetch_groq_models_for_settings(self, parent_tab) -> None:
+        """Обновить список моделей Groq (ключ берётся из поля настроек)."""
+        from PySide6.QtWidgets import QMessageBox, QApplication
+        import requests
+
+        entry = self._settings_W.get("prov", {}).get("groq", {})
+        key_widget = entry.get("api_key")
+        key = key_widget.text().strip() if key_widget else ""
+        if not key:
+            QMessageBox.warning(parent_tab, "Нужен ключ", "Введите Groq API-ключ в разделе AI-провайдеры.")
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            resp = requests.get("https://api.groq.com/openai/v1/models",
+                                headers={"Authorization": f"Bearer {key}"}, timeout=10)
+            if resp.status_code in (401, 403):
+                QMessageBox.warning(parent_tab, "Ошибка",
+                    "Нейросеть недоступна. API ключ не валидный.")
+                return
+            if resp.status_code != 200:
+                QMessageBox.warning(parent_tab, "Ошибка", f"HTTP {resp.status_code}")
+                return
+            names = sorted(m.get("id", "") for m in resp.json().get("data", []) if m.get("id"))
+            if not names:
+                QMessageBox.warning(parent_tab, "Модели не найдены", "Groq вернул пустой список.")
+                return
+            self._fill_settings_combo("groq_model", names, parent_tab)
+        except Exception as e:
+            QMessageBox.warning(parent_tab, "Ошибка", f"{type(e).__name__}: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _fetch_gemini_models_for_settings(self, parent_tab) -> None:
+        """Обновить список моделей Gemini (ключ берётся из поля настроек)."""
+        from PySide6.QtWidgets import QMessageBox, QApplication
+        import requests
+
+        entry = self._settings_W.get("prov", {}).get("gemini", {})
+        key_widget = entry.get("api_key")
+        key = key_widget.text().strip() if key_widget else ""
+        if not key:
+            QMessageBox.warning(parent_tab, "Нужен ключ", "Введите Gemini API-ключ в разделе AI-провайдеры.")
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            resp = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
+                                params={"key": key}, timeout=10)
+            if resp.status_code in (400, 401, 403):
+                QMessageBox.warning(parent_tab, "Ошибка",
+                    "Нейросеть недоступна. API ключ не валидный "
+                    "(ключ Google AI Studio начинается с AIza...).")
+                return
+            if resp.status_code != 200:
+                QMessageBox.warning(parent_tab, "Ошибка", f"HTTP {resp.status_code}")
+                return
+            names = sorted(
+                m.get("name", "").replace("models/", "")
+                for m in resp.json().get("models", []) if m.get("name"))
+            bad = ("embed", "tts", "image", "live", "audio", "translat", "veo", "research")
+            names = [n for n in names if not any(b in n for b in bad)]
+            if not names:
+                QMessageBox.warning(parent_tab, "Модели не найдены", "Gemini вернул пустой список.")
+                return
+            self._fill_settings_combo("gemini_model", names, parent_tab)
+        except Exception as e:
+            QMessageBox.warning(parent_tab, "Ошибка", f"{type(e).__name__}: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+
     def _clear_old_reports(self, parent) -> None:
         """Удаление AI-отчётов старше N дней (Настройки → Хранение)."""
         from PySide6.QtWidgets import QInputDialog, QMessageBox
@@ -3573,6 +3786,13 @@ class MainWindow(QMainWindow):
                 self._refresh_metrics()
             except Exception:
                 pass
+            # Если метрик по репозиторию ещё нет — сразу считаем,
+            # чтобы вкладка не оставалась пустой после загрузки.
+            try:
+                if hasattr(self, "metrics_model") and self.metrics_model.rowCount() == 0:
+                    self._run_analysis_and_refresh_metrics()
+            except Exception as e:
+                logger.debug("auto metrics skipped: %s", e)
             try:
                 self._refresh_graph()
             except Exception:

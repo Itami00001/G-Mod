@@ -27,7 +27,8 @@ class GeminiProvider(BaseLLMProvider):
             config: Конфигурация с model
         """
         super().__init__(api_key, config)
-        self.model = config.get("model", "gemini-flash") if config else "gemini-flash"
+        from gmod.config.constants import DEFAULT_GEMINI_MODEL
+        self.model = config.get("model", DEFAULT_GEMINI_MODEL) if config else DEFAULT_GEMINI_MODEL
         
         if not self.api_key:
             logger.warning("Gemini API key not provided")

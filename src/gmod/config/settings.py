@@ -16,6 +16,9 @@ from gmod.config.constants import (
     DEFAULT_LEFT_DOCK_WIDTH, DEFAULT_RIGHT_DOCK_WIDTH,
     DEFAULT_MESSAGE_LIMIT, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS,
     DEFAULT_LOG_LEVEL,
+    DEFAULT_OLLAMA_URL, DEFAULT_OLLAMA_MODEL,
+    DEFAULT_GROQ_MODEL, DEFAULT_GROQ_API_KEY,
+    DEFAULT_GEMINI_MODEL, DEFAULT_GEMINI_API_KEY,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,29 +91,29 @@ class Settings:
     def groq_api_key(self) -> str:
         for p in self.llm_providers:
             if p.get("name") == "groq":
-                return p.get("api_key", "")
-        return ""
+                return p.get("api_key", "") or DEFAULT_GROQ_API_KEY
+        return DEFAULT_GROQ_API_KEY
 
     @property
     def groq_model(self) -> str:
         for p in self.llm_providers:
             if p.get("name") == "groq":
-                return p.get("model", "llama3-8b-8192")
-        return "llama3-8b-8192"
+                return p.get("model", DEFAULT_GROQ_MODEL)
+        return DEFAULT_GROQ_MODEL
 
     @property
     def gemini_api_key(self) -> str:
         for p in self.llm_providers:
             if p.get("name") == "gemini":
-                return p.get("api_key", "")
-        return ""
+                return p.get("api_key", "") or DEFAULT_GEMINI_API_KEY
+        return DEFAULT_GEMINI_API_KEY
 
     @property
     def gemini_model(self) -> str:
         for p in self.llm_providers:
             if p.get("name") == "gemini":
-                return p.get("model", "gemini-flash")
-        return "gemini-flash"
+                return p.get("model", DEFAULT_GEMINI_MODEL)
+        return DEFAULT_GEMINI_MODEL
 
     @property
     def message_limit(self) -> int:
@@ -163,15 +166,15 @@ class Settings:
             entry: Dict[str, Any] = {"name": name, "enabled": enabled}
 
             if name == "ollama":
-                entry["url"] = p.get("url", "http://localhost:11434")
-                entry["model"] = p.get("model", "llama3.2:3b")
+                entry["url"] = p.get("url", DEFAULT_OLLAMA_URL)
+                entry["model"] = p.get("model", DEFAULT_OLLAMA_MODEL)
                 entry["api_key"] = p.get("api_key", "") or ""
             elif name == "groq":
-                entry["api_key"] = p.get("api_key", "")
-                entry["model"] = p.get("model", "llama3-8b-8192")
+                entry["api_key"] = p.get("api_key", "") or DEFAULT_GROQ_API_KEY
+                entry["model"] = p.get("model", DEFAULT_GROQ_MODEL)
             elif name == "gemini":
-                entry["api_key"] = p.get("api_key", "")
-                entry["model"] = p.get("model", "gemini-flash")
+                entry["api_key"] = p.get("api_key", "") or DEFAULT_GEMINI_API_KEY
+                entry["model"] = p.get("model", DEFAULT_GEMINI_MODEL)
 
             providers.append(entry)
 

@@ -53,14 +53,73 @@ class OllamaProvider(BaseLLMProvider):
     
     def generate(self, prompt: str, **kwargs) -> str:
         """Генерация ответа через Ollama.
-        
+
+        По умолчанию — напрямую через нативный HTTP API (/api/chat),
+        БЕЗ litellm: litellm пытается считать токены через tiktoken
+        (кодировка cl100k_base) и падает с "Unknown encoding cl100k_base"
+        ещё до сетевого запроса — чат при запущенной Ollama не работает.
+        Нативный путь этот класс ошибок исключает полностью.
+        litellm остаётся опцией: config {"use_litellm": True}.
+
         Args:
             prompt: Промпт для генерации
             **kwargs: Дополнительные параметры (temperature, max_tokens, etc.)
-            
+
         Returns:
             Сгенерированный текст
         """
+        use_litellm = bool(self.config.get("use_litellm", False)) if self.config else False
+        if use_litellm:
+            return self._generate_via_litellm(prompt, **kwargs)
+        return self._generate_native(prompt, **kwargs)
+
+    def _generate_native(self, prompt: str, **kwargs) -> str:
+        """Генерация через нативный HTTP API Ollama (POST /api/chat)."""
+        import requests
+
+        extra = dict(kwargs)
+        temperature = extra.pop("temperature", 0.7)
+        max_tokens = extra.pop("max_tokens", 2000)
+        headers = {}
+        if self.api_key and not self._local_mode:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        logger.info(
+            "Ollama: native generate model=%s url=%s prompt_len=%d",
+            self.model, self.url, len(prompt),
+        )
+        try:
+            response = requests.post(
+                f"{self.url.rstrip('/')}/api/chat",
+                json=payload,
+                headers=headers,
+                timeout=180,
+            )
+        except Exception as e:
+            logger.error(f"Ollama native request failed: {e}")
+            raise
+        if response.status_code == 404:
+            raise RuntimeError(
+                f"Модель '{self.model}' не найдена на сервере {self.url}. "
+                f"Установите её командой: ollama pull {self.model}"
+            )
+        response.raise_for_status()
+        try:
+            content = response.json().get("message", {}).get("content", "")
+        except Exception as e:
+            raise RuntimeError(f"Ollama вернул не-JSON ответ: {e}")
+        if not content:
+            raise RuntimeError("Ollama вернул пустой ответ")
+        logger.info("Ollama: ответ получен (длина %d)", len(content))
+        return content
+
+    def _generate_via_litellm(self, prompt: str, **kwargs) -> str:
+        """Генерация через litellm (опция use_litellm=True)."""
         if not LITELLM_AVAILABLE:
             raise RuntimeError("litellm not available, cannot use Ollama provider")
         
@@ -96,13 +155,10 @@ class OllamaProvider(BaseLLMProvider):
             raise
     
     def is_available(self) -> bool:
-        """Проверка доступности Ollama."""
-        from gmod.infrastructure.llm.health import MSG_NO_LIB
+        """Проверка доступности Ollama (сервер отвечает на /api/tags).
 
-        if not LITELLM_AVAILABLE:
-            logger.warning("Ollama: %s", MSG_NO_LIB)
-            return False
-
+        litellm для проверки не нужен — используется прямой HTTP-запрос.
+        """
         try:
             import requests
             headers = {}
@@ -127,10 +183,11 @@ class OllamaProvider(BaseLLMProvider):
             "Нейросеть недоступна. ...".
         """
         from gmod.infrastructure.llm.health import (
-            MSG_NO_LIB, MSG_OK, ProviderStatus, classify_exception,
+            MSG_OK, ProviderStatus, classify_exception,
         )
 
-        if not LITELLM_AVAILABLE:
+        use_litellm = bool(self.config.get("use_litellm", False)) if self.config else False
+        if use_litellm and not LITELLM_AVAILABLE:
             return ProviderStatus(False, MSG_NO_LIB, "no_lib", "litellm not installed")
         try:
             import requests
@@ -139,6 +196,18 @@ class OllamaProvider(BaseLLMProvider):
                 headers["Authorization"] = f"Bearer {self.api_key}"
             resp = requests.get(f"{self.url}/api/tags", timeout=5, headers=headers)
             if resp.status_code == 200:
+                # Сервер жив — проверяем, установлена ли нужная модель.
+                try:
+                    names = [m.get("name", "") for m in resp.json().get("models", [])]
+                except Exception:
+                    names = []
+                if names and not self._model_installed(names):
+                    hint = (
+                        f"Ollama доступна, но модель '{self.model}' не установлена. "
+                        f"Выполните: ollama pull {self.model}"
+                    )
+                    logger.warning("Ollama: %s (установлены: %s)", hint, names)
+                    return ProviderStatus(False, hint, "model_missing", f"have={names}")
                 logger.info("Ollama: проверка соединения — OK")
                 return ProviderStatus(True, MSG_OK, "ok", f"HTTP 200, {self.url}")
             if resp.status_code in (401, 403):
@@ -152,6 +221,16 @@ class OllamaProvider(BaseLLMProvider):
         except Exception as e:
             reason, msg = classify_exception(e)
             return ProviderStatus(False, msg, reason, str(e)[:300])
+    def _model_installed(self, server_models: list) -> bool:
+        """Есть ли нужная модель на сервере (точное имя или базовое без тега)."""
+        want = (self.model or "").strip()
+        if not want:
+            return True
+        if want in server_models:
+            return True
+        base = want.split(":")[0]
+        return any(m == base or m.split(":")[0] == base for m in server_models)
+
     def get_available_models(self) -> list:
         """Получение списка доступных моделей."""
         if not self.is_available():

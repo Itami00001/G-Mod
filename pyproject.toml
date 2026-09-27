@@ -14,7 +14,10 @@ dependencies = [
     "litellm>=1.0.0",
     "pyqtgraph>=0.13.0",
     "networkx>=3.2.0",
-    "pydantic>=2.5.0",
+    # Пин pydantic: pydantic-core обязан точно совпадать с требуемым
+    # версией pydantic, иначе "installed pydantic-core is incompatible".
+    # pip сам подтянет нужный pydantic-core под этот пин.
+    "pydantic==2.13.5",
     # "qdarktheme>=2.1.0",  # Temporarily disabled - requires Python 3.11+
     "pyyaml>=6.0.0",
 ]

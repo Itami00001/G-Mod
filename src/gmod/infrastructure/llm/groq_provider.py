@@ -27,7 +27,8 @@ class GroqProvider(BaseLLMProvider):
             config: Конфигурация с model
         """
         super().__init__(api_key, config)
-        self.model = config.get("model", "llama3.2:3b") if config else "llama3.2:3b"
+        from gmod.config.constants import DEFAULT_GROQ_MODEL
+        self.model = config.get("model", DEFAULT_GROQ_MODEL) if config else DEFAULT_GROQ_MODEL
         
         if not self.api_key:
             logger.warning("Groq API key not provided")

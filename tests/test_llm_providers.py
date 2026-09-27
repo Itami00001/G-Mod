@@ -65,9 +65,23 @@ class TestOllamaProvider:
             mod.LITELLM_AVAILABLE = original
 
     def test_generate_calls_litellm(self):
+        # По умолчанию generate идёт напрямую через /api/chat без litellm.
+        from gmod.infrastructure.llm.ollama_provider import OllamaProvider
+        from unittest.mock import MagicMock, patch
+        p = OllamaProvider(config={"url": "http://localhost:11434", "model": "llama3.2:3b"})
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"message": {"content": "Hello from Ollama"}}
+        with patch("requests.post", return_value=mock_resp) as mp:
+            result = p.generate("test prompt")
+        assert result == "Hello from Ollama"
+        assert "/api/chat" in mp.call_args[0][0]
+
+    def test_generate_litellm_opt_in(self):
         from gmod.infrastructure.llm import ollama_provider as mod
         from gmod.infrastructure.llm.ollama_provider import OllamaProvider
-        p = OllamaProvider(config={"url": "http://localhost:11434", "model": "llama3.2:3b"})
+        p = OllamaProvider(config={"url": "http://localhost:11434", "model": "llama3.2:3b",
+                                   "use_litellm": True})
         mock_response = {"choices": [{"message": {"content": "Hello from Ollama"}}]}
         mock_litellm = MagicMock()
         mock_litellm.completion.return_value = mock_response
@@ -76,10 +90,22 @@ class TestOllamaProvider:
             result = p.generate("test prompt")
         assert result == "Hello from Ollama"
 
+    def test_generate_model_missing_hint(self):
+        from gmod.infrastructure.llm.ollama_provider import OllamaProvider
+        from unittest.mock import MagicMock, patch
+        p = OllamaProvider(config={"url": "http://localhost:11434", "model": "nosuch:model"})
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        with patch("requests.post", return_value=mock_resp):
+            with pytest.raises(RuntimeError, match="ollama pull"):
+                p.generate("test")
+
     def test_generate_raises_without_litellm(self):
+        # Без litellm native-режим работает; opt-in litellm без библиотеки — ошибка.
         from gmod.infrastructure.llm import ollama_provider as mod
         from gmod.infrastructure.llm.ollama_provider import OllamaProvider
-        p = OllamaProvider(config={"url": "http://localhost:11434", "model": "llama3.2:3b"})
+        p = OllamaProvider(config={"url": "http://localhost:11434", "model": "llama3.2:3b",
+                                   "use_litellm": True})
         with patch.object(mod, "LITELLM_AVAILABLE", False):
             with pytest.raises(RuntimeError, match="litellm not available"):
                 p.generate("test")
