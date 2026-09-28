@@ -44,13 +44,15 @@ a = Analysis(
         ("data/config.yaml", "data"),
         ("README.md", "."),
         ("assets/icon.ico", "."),
+        ("resources/styles/gmod.qss", "resources/styles"),
     ] + tree_sitter_grammars + litellm_data_files + pyqtgraph_data_files
     + tiktoken_data_files + tiktoken_ext_data_files,
     hiddenimports=[
         # Токенизаторы (entry-point плагины tiktoken_ext не видны анализатору)
         "tiktoken", "tiktoken.registry", "tiktoken_ext", "tiktoken_ext.openai_public",
         # Core UI
-        "gmod.ui.main_window",
+        "gmod.ui.main_window", "gmod.ui.theme", "gmod.ui.setting_defs",
+        "gmod.ui.neural_dialog",
         "PySide6.QtWidgets", "PySide6.QtCore", "PySide6.QtGui",
         "PySide6.QtNetwork", "PySide6.QtSvg",
         # Infrastructure
@@ -70,8 +72,28 @@ a = Analysis(
         "gmod.infrastructure.llm.ollama_provider",
         "gmod.infrastructure.llm.groq_provider",
         "gmod.infrastructure.llm.gemini_provider",
+        "gmod.infrastructure.llm.openai_provider",
+        "gmod.infrastructure.llm.anthropic_provider",
         "gmod.infrastructure.llm.session_manager",
         "gmod.infrastructure.llm.base",
+        "gmod.infrastructure.llm.provider_config",
+        "gmod.infrastructure.llm.health",
+        "gmod.infrastructure.credentials.credential_service",
+        # Services
+        "gmod.services.chat_service",
+        "gmod.services.context_service",
+        "gmod.services.workspace_service",
+        "gmod.services.backup_service",
+        "gmod.services.llm_service",
+        "gmod.services.repository_service",
+        "gmod.services.report_comparison",
+        # ML
+        "gmod.ml.activations", "gmod.ml.datasets", "gmod.ml.evaluator",
+        "gmod.ml.layer", "gmod.ml.losses", "gmod.ml.model_storage",
+        "gmod.ml.neural_network", "gmod.ml.predictor", "gmod.ml.schemas",
+        "gmod.ml.trainer",
+        # Secrets (ТЗ §4: keyring в exe)
+        "keyring", "keyring.backends", "keyring.backends.Windows",
         # Usecases
         "gmod.usecases.analyze_repository",
         "gmod.usecases.run_archaeologist",

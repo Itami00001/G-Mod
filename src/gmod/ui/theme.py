@@ -10,7 +10,21 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-THEME_QSS = Path(__file__).resolve().parent.parent.parent / "resources" / "styles" / "gmod.qss"
+THEME_RELATIVE = Path("resources") / "styles" / "gmod.qss"
+
+
+def _candidate_paths():
+    """Все места, где может лежать gmod.qss (dev + frozen exe)."""
+    here = Path(__file__).resolve()
+    yield here.parent.parent.parent / THEME_RELATIVE  # dev: src/../..
+    try:
+        import sys
+        base = getattr(sys, "_MEIPASS", None)
+        if base:
+            yield Path(base) / THEME_RELATIVE
+            yield Path(base) / "_internal" / THEME_RELATIVE
+    except Exception:
+        pass
 
 
 class ThemeManager:
@@ -19,14 +33,29 @@ class ThemeManager:
     _cached_qss: str = ""
 
     @classmethod
+    def qss_path(cls) -> Path | None:
+        """Первый существующий путь к QSS."""
+        for candidate in _candidate_paths():
+            try:
+                if candidate.is_file():
+                    return candidate
+            except Exception:
+                pass
+        return None
+
+    @classmethod
     def qss(cls) -> str:
         """Текст QSS (кэшируется)."""
         if not cls._cached_qss:
+            path = cls.qss_path()
+            if path is None:
+                logger.error("ThemeManager: gmod.qss не найден")
+                return ""
             try:
-                cls._cached_qss = THEME_QSS.read_text(encoding="utf-8")
-                logger.info("ThemeManager: QSS загружен (%s)", THEME_QSS)
+                cls._cached_qss = path.read_text(encoding="utf-8")
+                logger.info("ThemeManager: QSS загружен (%s)", path)
             except Exception as e:
-                logger.error("ThemeManager: нет QSS %s: %s", THEME_QSS, e)
+                logger.error("ThemeManager: нет QSS %s: %s", path, e)
                 cls._cached_qss = ""
         return cls._cached_qss
 
