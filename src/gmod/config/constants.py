@@ -21,7 +21,9 @@ DATABASE_FILE = DATA_DIR / "gmod.db"
 
 # Настройки БД
 # v2: + таблицы validator_feedback / validator_runs (IF NOT EXISTS, безопасно)
-DB_VERSION = 2
+# v3 (ТЗ §15): + chat_sessions/chat_messages/workspaces/workspace_tabs/
+#   workspace_views; миграция workspace_state -> workspaces.
+DB_VERSION = 3
 
 # Настройки UI
 DEFAULT_WINDOW_WIDTH = 1200

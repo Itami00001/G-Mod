@@ -998,11 +998,20 @@ class MainWindow(QMainWindow):
         chat_tab = QWidget()
         chat_layout = QVBoxLayout(chat_tab)
         
-        # Область истории диалога (скроллируемая)
+        # Область истории диалога — восстанавливается из SQLite (ТЗ §9).
         self.chat_history = QTextEdit()
         self.chat_history.setReadOnly(True)
         self.chat_history.setPlaceholderText("История диалога появится здесь...")
-        self.chat_history.append("AI: Привет! Загрузи репозиторий, чтобы начать.")
+        self._chat_session_id = None
+        try:
+            from gmod.services.chat_service import ChatService
+            _svc = ChatService(db=self.db)
+            _sess = _svc.get_or_create_session(
+                workspace_id="default",
+                repository_id=self._get_current_repo_id() or "")
+            self._chat_session_id = _sess["id"]
+        except Exception as e:
+            logger.debug("chat restore: %s", e)
         chat_layout.addWidget(self.chat_history, 1)
         
         # Поле ввода сообщения
@@ -1052,7 +1061,10 @@ class MainWindow(QMainWindow):
         self._load_llm_settings()
         # Тихая проверка статуса после создания вкладки (не блокирует UI)
         QTimer.singleShot(500, self._on_check_llm_status)
-        
+        # Восстановление истории активной сессии (ТЗ §9).
+        if self._chat_session_id:
+            QTimer.singleShot(100, lambda: self._render_chat_session(self._chat_session_id))
+
         return chat_tab
     
     def _load_llm_settings(self) -> None:
@@ -3977,13 +3989,10 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self._send_message_async(text))
     
     def _send_message_async(self, text: str) -> None:
-        """Асинхронная отправка сообщения через RunArchaeologistUseCase."""
+        """Асинхронная отправка через ChatService (ТЗ §8: вопрос уходит в LLM)."""
         try:
-            from gmod.config.settings import get_settings
-            from gmod.domain.entities import Repository
-            from gmod.usecases.run_archaeologist import RunArchaeologistUseCase
+            from gmod.services.chat_service import ChatService
 
-            settings = get_settings()
             config = self._build_llm_config_for_selection()
             # Пробрасываем параметры прогноза/анализа из вкладки «Анализ», если заданы
             try:
@@ -3994,65 +4003,69 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-            # Текущий репозиторий и коммит
-            repo_id = self._get_current_repo_id()
-            if not repo_id:
-                self.chat_history.append("\nAI: Сначала загрузите репозиторий в правой шторке.")
-                return
+            try:
+                provider = self.provider_combo.currentText()
+                model = self.model_combo.currentText()
+            except Exception:
+                provider, model = "", ""
 
-            repo_path = self._get_repo_path(repo_id)
-            if not repo_path:
-                self.chat_history.append("\nAI: Не найден путь к репозиторию.")
-                return
+            repo_id = self._get_current_repo_id() or ""
+            service = ChatService(
+                db=self.db, llm_config=config,
+                message_limit=int(config.get("llm", {}).get("message_limit", 7)))
+            session = service.get_or_create_session(
+                workspace_id="default", repository_id=repo_id,
+                provider=provider, model=model)
+            self._chat_session_id = session["id"]
 
-            # Создаём репозиторий
-            repo = Repository(
-                id=repo_id,
-                url="",
-                local_path=repo_path,
-                name=repo_id
+            # Контекст репозитория для промпта (файлы, коммит, метрики).
+            repo_context = self._repo_chat_context(repo_id)
+            workspace_context = (
+                f"Активная вкладка: {self.central_tabs.tabText(self.central_tabs.currentIndex())}"
             )
+            system_prompt = (
+                "Ты — AI-ассистент GMod (Git Archaeologist). Отвечай по-русски, "
+                "кратко и по делу, опираясь на контекст репозитория."
+            )
+            llm_kwargs = {
+                "temperature": float(config.get("llm", {}).get("temperature", 0.7)),
+                "max_tokens": int(config.get("llm", {}).get("max_tokens", 2000)),
+            }
 
-            # Берём последний коммит
-            from gmod.infrastructure.git.git_parser import GitParser
-            git_parser = GitParser()
-            commits = git_parser.get_commits(repo_id, limit=1, repo_path=repo_path)
-            if not commits:
-                self.chat_history.append("\nAI: Коммиты не найдены.")
-                return
-            commit_hash = commits[0].hash
-
-            # Запускаем usecase в отдельном потоке
+            # Вопрос уже показан в _on_send_message; ответ придёт из потока.
             from PySide6.QtCore import QThread, Signal
 
             class ChatThread(QThread):
                 finished = Signal(dict)
                 error = Signal(str)
 
-                def __init__(self, repo, commit_hash, config, user_message):
+                def __init__(self, service, session_id, text, system_prompt,
+                             workspace_context, repo_context, llm_kwargs):
                     super().__init__()
-                    self.repo = repo
-                    self.commit_hash = commit_hash
-                    self.config = config
-                    self.user_message = user_message
+                    self.service = service
+                    self.session_id = session_id
+                    self.text = text
+                    self.system_prompt = system_prompt
+                    self.workspace_context = workspace_context
+                    self.repo_context = repo_context
+                    self.llm_kwargs = llm_kwargs
 
                 def run(self):
                     try:
-                        usecase = RunArchaeologistUseCase(self.config)
-                        # Добавляем сообщение пользователя в промпт
-                        prompt = self.user_message
-                        result = usecase.execute(
-                            repository=self.repo,
-                            commit_hash=self.commit_hash,
-                            agent_id="chat_session"
+                        result = self.service.send_message(
+                            session_id=self.session_id,
+                            user_text=self.text,
+                            system_prompt=self.system_prompt,
+                            workspace_context=self.workspace_context,
+                            repository_context=self.repo_context,
+                            llm_kwargs=self.llm_kwargs,
                         )
-                        # Добавляем сообщение пользователя к результату
-                        result["user_message"] = prompt
                         self.finished.emit(result)
                     except Exception as e:
                         self.error.emit(str(e))
 
-            self.chat_thread = ChatThread(repo, commit_hash, config, text)
+            self.chat_thread = ChatThread(service, session["id"], text, system_prompt,
+                                          workspace_context, repo_context, llm_kwargs)
             self.chat_thread.finished.connect(self._on_chat_finished)
             self.chat_thread.error.connect(self._on_chat_error)
             self.chat_thread.start()
@@ -4064,33 +4077,77 @@ class MainWindow(QMainWindow):
             self.send_button.setText("Отправить")
             self.status_bar.showMessage("Готово")
 
+    def _repo_chat_context(self, repo_id: str) -> str:
+        """Краткий контекст репозитория для чата (ТЗ §8: Repository Context)."""
+        if not repo_id:
+            return "Репозиторий не загружен."
+        try:
+            repo_path = self._get_repo_path(repo_id)
+            parts = [f"Репозиторий: {repo_id}", f"Путь: {repo_path or '?'}"]
+            if repo_path:
+                from pathlib import Path as _Path
+                try:
+                    py_files = [str(p.relative_to(repo_path)) for p in
+                                _Path(repo_path).rglob("*.py")]
+                    py_files = [f for f in py_files
+                                if not any(part.startswith(".") for part in _Path(f).parts)]
+                    parts.append(f"Python-файлов: {len(py_files)}")
+                    parts.append("Файлы: " + ", ".join(py_files[:20]))
+                except Exception:
+                    pass
+            try:
+                from gmod.infrastructure.git.git_parser import GitParser
+                commits = GitParser().get_commits(repo_id, limit=1,
+                                                  repo_path=repo_path or "")
+                if commits:
+                    c = commits[0]
+                    parts.append(f"Последний коммит: {c.hash[:8]} {c.author}: {c.message[:120]}")
+            except Exception:
+                pass
+            try:
+                with self.db.get_connection() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT COUNT(*), COUNT(DISTINCT file_path) FROM raw_metrics"
+                                " WHERE repo_id = ?", (repo_id,))
+                    total, files = cur.fetchone()
+                    parts.append(f"Метрик в БД: {total} по {files} файлам")
+            except Exception:
+                pass
+            return "\n".join(parts)
+        except Exception as e:
+            logger.debug("repo context: %s", e)
+            return f"Репозиторий: {repo_id}"
+
+    def _render_chat_session(self, session_id: str) -> None:
+        """Отрисовка истории сессии из SQLite (ТЗ §9: восстановление)."""
+        try:
+            from gmod.services.chat_service import ChatService
+            service = ChatService(db=self.db)
+            self.chat_history.clear()
+            messages = service.get_messages(session_id)
+            if not messages:
+                self.chat_history.append("AI: Привет! Загрузи репозиторий, чтобы начать.")
+                return
+            for m in messages:
+                role = "Вы" if m.get("role") == "user" else "AI"
+                self.chat_history.append(f"\n{role}: {m.get('content', '')}")
+        except Exception as e:
+            logger.error("render chat: %s", e)
+
     def _on_chat_finished(self, result: dict) -> None:
-        """Обработка завершения чата."""
+        """Обработка завершения чата (ответ ChatService)."""
         self.send_button.setEnabled(True)
         self.send_button.setText("Отправить")
         self.status_bar.showMessage("Готово")
 
         if result.get("status") == "success":
-            analysis = result.get("analysis", {})
-            risk = analysis.get("risk_score", "?")
-            reason = analysis.get("reason", "")
-            recommendation = analysis.get("recommendation", "")
-            affected = analysis.get("affected_units", [])
-
-            response_parts = [f"📊 Риск: {risk}/10"]
-            if reason:
-                response_parts.append(f"💭 {reason}")
-            if recommendation:
-                response_parts.append(f"🔧 {recommendation}")
-            if affected:
-                response_parts.append(f"🎯 Затронуто: {', '.join(affected[:5])}")
-            
-            self.chat_history.append("\nAI: " + "\n".join(response_parts))
+            answer = (result.get("message") or {}).get("content", "")
+            self.chat_history.append("\nAI: " + (answer or "(пустой ответ)"))
+            logger.info("Чат: ответ получен")
         else:
             err_text = f"\nAI: Ошибка: {result.get('message', 'Unknown')}"
             if result.get("hint"):
                 err_text += f"\nЧто делать: {result['hint']}"
-            err_text += "\n(подробности — вкладка «Анализ» → «Журнал»)"
             self.chat_history.append(err_text)
             logger.error("Чат: %s", result.get("message", "Unknown"))
 

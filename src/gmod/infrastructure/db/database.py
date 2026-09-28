@@ -59,6 +59,37 @@ class Database:
                     (DB_VERSION,)
                 )
                 logger.info(f"Database schema updated to version {DB_VERSION}")
+
+            # Миграция ТЗ §15: workspace_state -> workspaces (идемпотентна).
+            try:
+                self._migrate_workspace_state(cursor)
+            except Exception as e:
+                logger.error(f"Workspace migration failed: {e}")
+
+    def _migrate_workspace_state(self, cursor: sqlite3.Cursor) -> None:
+        """Перенос плоских ключей workspace_state в сущность Workspace.
+
+        Старая таблица НЕ удаляется (обратная совместимость один релиз, ТЗ §15).
+        """
+        cursor.execute("SELECT value FROM workspace_state WHERE key = 'current_repo_id'")
+        row = cursor.fetchone()
+        repo_id = row[0] if row else ""
+        cursor.execute("SELECT value FROM workspace_state WHERE key = 'active_tab'")
+        row = cursor.fetchone()
+        active_tab = row[0] if row else "Чат"
+        cursor.execute("SELECT value FROM workspace_state WHERE key = 'theme'")
+        row = cursor.fetchone()
+        theme = row[0] if row else "dark"
+
+        cursor.execute("SELECT id FROM workspaces WHERE id = 'default'")
+        if cursor.fetchone():
+            return  # уже мигрировано
+        cursor.execute("""
+            INSERT INTO workspaces (id, name, repository_id, active_tab, theme, schema_version)
+            VALUES ('default', 'Default', ?, ?, ?, 3)
+        """, (repo_id, active_tab, theme))
+        logger.info("Workspace migrated from workspace_state (repo=%s tab=%s)",
+                    repo_id, active_tab)
     
     def _create_tables(self, cursor: sqlite3.Cursor) -> None:
         """Создание всех таблиц."""
@@ -123,7 +154,80 @@ class Database:
             )
         """)
 
-        # --- Валидатор с 0: фидбек пользователя (точность ответов/заметок) ---
+        # --- Чат: сессии и сообщения (ТЗ §7, §9) ---
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL DEFAULT 'default',
+                repository_id TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT 'Новый диалог',
+                summary TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                sequence INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            )
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+            ON chat_messages(session_id, sequence)
+        """)
+
+        # --- Workspace (ТЗ §11-14) ---
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT 'Default',
+                repository_id TEXT NOT NULL DEFAULT '',
+                active_tab TEXT NOT NULL DEFAULT 'Чат',
+                theme TEXT NOT NULL DEFAULT 'dark',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                schema_version INTEGER NOT NULL DEFAULT 3
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_tabs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id TEXT NOT NULL,
+                tab_key TEXT NOT NULL,
+                is_open INTEGER NOT NULL DEFAULT 1,
+                order_index INTEGER NOT NULL DEFAULT 0,
+                state_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(workspace_id, tab_key)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_views (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id TEXT NOT NULL,
+                view_key TEXT NOT NULL,
+                visible INTEGER NOT NULL DEFAULT 1,
+                order_index INTEGER NOT NULL DEFAULT 0,
+                geometry_json TEXT NOT NULL DEFAULT '{}',
+                state_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(workspace_id, view_key)
+            )
+        """)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS validator_feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -332,6 +436,215 @@ class Database:
                 SELECT id, epochs, accuracy, n_samples, timestamp
                 FROM validator_runs ORDER BY id DESC LIMIT ?
             """, (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    # ---------------- Чат: сессии и сообщения (ТЗ §7, §9) ----------------
+
+    def save_chat_session(self, session: dict) -> str:
+        """Создание/обновление chat-сессии. Возвращает id."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO chat_sessions
+                    (id, workspace_id, repository_id, provider, model, title, summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    workspace_id=excluded.workspace_id,
+                    repository_id=excluded.repository_id,
+                    provider=excluded.provider,
+                    model=excluded.model,
+                    title=excluded.title,
+                    summary=excluded.summary,
+                    updated_at=CURRENT_TIMESTAMP
+            """, (session["id"], session.get("workspace_id", "default"),
+                  session.get("repository_id", ""), session.get("provider", ""),
+                  session.get("model", ""), session.get("title", "Новый диалог"),
+                  session.get("summary", "")))
+            return session["id"]
+
+    def get_chat_sessions(self, workspace_id: str = "default") -> list:
+        """Все сессии workspace (новые сверху)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, workspace_id, repository_id, provider, model,
+                       title, summary, created_at, updated_at
+                FROM chat_sessions WHERE workspace_id = ?
+                ORDER BY updated_at DESC
+            """, (workspace_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_chat_session(self, session_id: str) -> Optional[dict]:
+        """Одна сессия по id."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, workspace_id, repository_id, provider, model,
+                       title, summary, created_at, updated_at
+                FROM chat_sessions WHERE id = ?
+            """, (session_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def delete_chat_session(self, session_id: str) -> None:
+        """Удаление сессии вместе с сообщениями."""
+        logger.info("chat: удаление сессии %s", session_id)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+            cursor.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+
+    def save_chat_message(self, message: dict) -> int:
+        """Сохранение сообщения СРАЗУ после создания (ТЗ §9). Возвращает id."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO chat_messages
+                    (session_id, role, content, provider, model, sequence, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (message["session_id"], message["role"], message.get("content", ""),
+                  message.get("provider", ""), message.get("model", ""),
+                  int(message.get("sequence", 0)), message.get("metadata_json", "{}")))
+            msg_id = cursor.lastrowid
+            cursor.execute("""
+                UPDATE chat_sessions SET updated_at=CURRENT_TIMESTAMP WHERE id = ?
+            """, (message["session_id"],))
+            return msg_id
+
+    def get_chat_messages(self, session_id: str) -> list:
+        """Все сообщения сессии по порядку."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, session_id, role, content, provider, model,
+                       sequence, created_at, metadata_json
+                FROM chat_messages WHERE session_id = ?
+                ORDER BY sequence ASC, id ASC
+            """, (session_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def next_message_sequence(self, session_id: str) -> int:
+        """Следующий порядковый номер сообщения в сессии."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT MAX(sequence) FROM chat_messages WHERE session_id = ?",
+                           (session_id,))
+            row = cursor.fetchone()
+            return (row[0] or 0) + 1 if row else 1
+
+    def delete_chat_message(self, message_id: int) -> None:
+        """Удаление одного сообщения (ТЗ §26)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM chat_messages WHERE id = ?", (message_id,))
+
+    def clear_chat_session(self, session_id: str) -> None:
+        """Очистка только текущей сессии (сообщения; сессия остаётся, ТЗ §26)."""
+        logger.info("chat: очистка сессии %s", session_id)
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+            cursor.execute("""
+                UPDATE chat_sessions SET summary='', updated_at=CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (session_id,))
+
+    # ---------------- Workspace (ТЗ §11-14) ----------------
+
+    def save_workspace(self, workspace: dict) -> str:
+        """Создание/обновление workspace. Возвращает id."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO workspaces (id, name, repository_id, active_tab, theme)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,
+                    repository_id=excluded.repository_id,
+                    active_tab=excluded.active_tab,
+                    theme=excluded.theme,
+                    updated_at=CURRENT_TIMESTAMP
+            """, (workspace.get("id", "default"), workspace.get("name", "Default"),
+                  workspace.get("repository_id", ""), workspace.get("active_tab", "Чат"),
+                  workspace.get("theme", "dark")))
+            return workspace.get("id", "default")
+
+    def get_workspace(self, workspace_id: str = "default") -> Optional[dict]:
+        """Workspace по id."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, name, repository_id, active_tab, theme,
+                       created_at, updated_at, schema_version
+                FROM workspaces WHERE id = ?
+            """, (workspace_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def save_workspace_tabs(self, workspace_id: str, tabs: list) -> None:
+        """Сохранение набора вкладок: [{tab_key, is_open, order_index, state}]."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            for order, tab in enumerate(tabs):
+                import json as _json
+                state = tab.get("state", {})
+                cursor.execute("""
+                    INSERT INTO workspace_tabs
+                        (workspace_id, tab_key, is_open, order_index, state_json)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(workspace_id, tab_key) DO UPDATE SET
+                        is_open=excluded.is_open,
+                        order_index=excluded.order_index,
+                        state_json=excluded.state_json,
+                        updated_at=CURRENT_TIMESTAMP
+                """, (workspace_id, tab["tab_key"], int(tab.get("is_open", True)),
+                      tab.get("order_index", order),
+                      state if isinstance(state, str) else _json.dumps(state, ensure_ascii=False)))
+
+    def get_workspace_tabs(self, workspace_id: str = "default") -> list:
+        """Вкладки workspace по порядку."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT tab_key, is_open, order_index, state_json, updated_at
+                FROM workspace_tabs WHERE workspace_id = ?
+                ORDER BY order_index ASC
+            """, (workspace_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def save_workspace_view(self, workspace_id: str, view: dict) -> None:
+        """Сохранение состояния одного view (dock/filters/graph/...)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            import json as _json
+            for field in ("geometry", "state"):
+                value = view.get(field, {})
+                if not isinstance(value, str):
+                    view[field] = _json.dumps(value, ensure_ascii=False)
+            cursor.execute("""
+                INSERT INTO workspace_views
+                    (workspace_id, view_key, visible, order_index,
+                     geometry_json, state_json)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workspace_id, view_key) DO UPDATE SET
+                    visible=excluded.visible,
+                    order_index=excluded.order_index,
+                    geometry_json=excluded.geometry_json,
+                    state_json=excluded.state_json,
+                    updated_at=CURRENT_TIMESTAMP
+            """, (workspace_id, view["view_key"], int(view.get("visible", True)),
+                  int(view.get("order_index", 0)), view.get("geometry", "{}"),
+                  view.get("state", "{}")))
+
+    def get_workspace_views(self, workspace_id: str = "default") -> list:
+        """Все views workspace."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT view_key, visible, order_index, geometry_json, state_json, updated_at
+                FROM workspace_views WHERE workspace_id = ?
+                ORDER BY order_index ASC
+            """, (workspace_id,))
             return [dict(row) for row in cursor.fetchall()]
 
 

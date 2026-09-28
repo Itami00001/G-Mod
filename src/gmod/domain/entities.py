@@ -86,7 +86,69 @@ class AIReport:
     response_json: str
     risk_score: int
     timestamp: datetime = None
-    
+
     def __post_init__(self):
         if self.timestamp is None:
             self.timestamp = datetime.now()
+
+
+@dataclass
+class ChatSession:
+    """Сессия чата (ТЗ §7)."""
+
+    id: str
+    workspace_id: str = "default"
+    repository_id: str = ""
+    provider: str = ""
+    model: str = ""
+    title: str = "Новый диалог"
+    summary: str = ""
+    created_at: datetime = None
+    updated_at: datetime = None
+
+    def __post_init__(self):
+        now = datetime.now()
+        if self.created_at is None:
+            self.created_at = now
+        if self.updated_at is None:
+            self.updated_at = now
+
+
+@dataclass
+class ChatMessage:
+    """Сообщение чата (ТЗ §7). Роли: system / user / assistant."""
+
+    id: int = 0
+    session_id: str = ""
+    role: str = "user"
+    content: str = ""
+    provider: str = ""
+    model: str = ""
+    sequence: int = 0
+    created_at: datetime = None
+    metadata_json: str = "{}"
+
+    def __post_init__(self):
+        if self.created_at is None:
+            self.created_at = datetime.now()
+
+
+@dataclass
+class Workspace:
+    """Рабочее пространство (ТЗ §11)."""
+
+    id: str = "default"
+    name: str = "Default"
+    repository_id: str = ""
+    active_tab: str = "Чат"
+    theme: str = "dark"
+    created_at: datetime = None
+    updated_at: datetime = None
+    schema_version: int = 3
+
+    def __post_init__(self):
+        now = datetime.now()
+        if self.created_at is None:
+            self.created_at = now
+        if self.updated_at is None:
+            self.updated_at = now
