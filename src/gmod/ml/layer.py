@@ -32,8 +32,13 @@ class DenseLayer:
         self._last_z = x @ self.weights + self.bias
         return self.activation(self._last_z)
 
-    def backward(self, grad_output: np.ndarray, learning_rate: float) -> np.ndarray:
-        """Обратный проход с SGD-обновлением. Возвращает градиент на вход."""
+    def backward(self, grad_output: np.ndarray, learning_rate: float,
+                 max_grad_norm: float = 5.0) -> np.ndarray:
+        """Обратный проход с SGD-обновлением. Возвращает градиент на вход.
+
+        Градиенты клиппируются по глобальной норме — защита от
+        расходимости при большом learning rate.
+        """
         if self.activation_derivative is not None:
             grad_z = grad_output * self.activation_derivative(self._last_z)
         else:
@@ -42,6 +47,11 @@ class DenseLayer:
         # grad_z уже нормирован на батч в loss (single normalization).
         grad_w = self._last_input.T @ grad_z
         grad_b = np.mean(grad_z, axis=0)
+        norm = float(np.sqrt(np.sum(grad_w ** 2) + np.sum(grad_b ** 2)))
+        if norm > max_grad_norm:
+            scale = max_grad_norm / norm
+            grad_w = grad_w * scale
+            grad_b = grad_b * scale
         grad_input = grad_z @ self.weights.T
         # SGD-обновление весов (собственный код, ТЗ §10).
         self.weights -= learning_rate * grad_w

@@ -30,6 +30,12 @@ class Predictor:
         """
         names = self.feature_names or list(values.keys())
         vec = np.array([[float(values.get(n, 0.0)) for n in names]])
+        expected = getattr(getattr(self.network, "config", None),
+                           "input_features", None)
+        if expected and vec.shape[1] != expected:
+            raise ValueError(
+                f"Признаков {vec.shape[1]}, а вход сети — {expected}. "
+                "Передайте полный словарь значений или feature_names датасета.")
         proba = float(self.network.predict_proba(self._normalize(vec))[0])
         problematic = proba >= threshold
         return {
