@@ -17,8 +17,8 @@ from gmod.config.constants import (
     DEFAULT_MESSAGE_LIMIT, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS,
     DEFAULT_LOG_LEVEL,
     DEFAULT_OLLAMA_URL, DEFAULT_OLLAMA_MODEL,
-    DEFAULT_GROQ_MODEL, DEFAULT_GROQ_API_KEY,
-    DEFAULT_GEMINI_MODEL, DEFAULT_GEMINI_API_KEY,
+    DEFAULT_GROQ_MODEL,
+    DEFAULT_GEMINI_MODEL,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,18 +81,68 @@ class Settings:
 
     @property
     def ollama_api_key(self) -> str:
-        """API ключ Ollama Cloud (для локального сервера — пустая строка)."""
-        for p in self.llm_providers:
-            if p.get("name") == "ollama":
-                return p.get("api_key", "") or ""
-        return ""
+        """API ключ Ollama Cloud: keyring -> env -> legacy YAML (ТЗ §4.2)."""
+        return self._resolve_key("ollama")
 
     @property
     def groq_api_key(self) -> str:
+        """API ключ Groq: keyring -> env -> legacy YAML (ТЗ §4.2)."""
+        return self._resolve_key("groq")
+
+    @property
+    def gemini_api_key(self) -> str:
+        """API ключ Gemini: keyring -> env -> legacy YAML (ТЗ §4.2)."""
+        return self._resolve_key("gemini")
+
+    @property
+    def openai_api_key(self) -> str:
+        """API ключ OpenAI: keyring -> env -> legacy YAML (ТЗ §4.2)."""
+        return self._resolve_key("openai")
+
+    @property
+    def anthropic_api_key(self) -> str:
+        """API ключ Anthropic: keyring -> env -> legacy YAML (ТЗ §4.2)."""
+        return self._resolve_key("anthropic")
+
+    def _resolve_key(self, account: str) -> str:
+        """Приоритет ТЗ §4.2: OS Credential Store -> env -> legacy YAML."""
+        yaml_key = ""
         for p in self.llm_providers:
-            if p.get("name") == "groq":
-                return p.get("api_key", "") or DEFAULT_GROQ_API_KEY
-        return DEFAULT_GROQ_API_KEY
+            if p.get("name") == account:
+                yaml_key = p.get("api_key", "") or ""
+                break
+        try:
+            from gmod.infrastructure.credentials.credential_service import (
+                get_credential_service,
+            )
+            return get_credential_service().get_key(account, yaml_key)
+        except Exception:
+            return yaml_key
+
+    def key_source(self, account: str) -> str:
+        """Где лежит ключ: keyring | env | legacy | none (для UI)."""
+        yaml_key = ""
+        for p in self.llm_providers:
+            if p.get("name") == account:
+                yaml_key = p.get("api_key", "") or ""
+                break
+        try:
+            from gmod.infrastructure.credentials.credential_service import (
+                get_credential_service,
+            )
+            return get_credential_service().key_source(account, yaml_key)
+        except Exception:
+            return "legacy" if yaml_key else "none"
+
+    def legacy_keys(self) -> Dict[str, str]:
+        """Непустые ключи из config.yaml — кандидаты на миграцию (ТЗ §4.2)."""
+        found: Dict[str, str] = {}
+        for p in self.llm_providers:
+            name = (p.get("name") or "").lower()
+            key = p.get("api_key", "") or ""
+            if name and key:
+                found[name] = key
+        return found
 
     @property
     def groq_model(self) -> str:
@@ -102,11 +152,23 @@ class Settings:
         return DEFAULT_GROQ_MODEL
 
     @property
-    def gemini_api_key(self) -> str:
+    def openai_model(self) -> str:
         for p in self.llm_providers:
-            if p.get("name") == "gemini":
-                return p.get("api_key", "") or DEFAULT_GEMINI_API_KEY
-        return DEFAULT_GEMINI_API_KEY
+            if p.get("name") == "openai":
+                return p.get("model", "gpt-4o-mini")
+        return "gpt-4o-mini"
+
+    @property
+    def anthropic_model(self) -> str:
+        for p in self.llm_providers:
+            if p.get("name") == "anthropic":
+                return p.get("model", "claude-sonnet-4-20250514")
+        return "claude-sonnet-4-20250514"
+
+    @property
+    def gemini_api_key(self) -> str:
+        """API ключ Gemini: keyring -> env -> legacy YAML (ТЗ §4.2)."""
+        return self._resolve_key("gemini")
 
     @property
     def gemini_model(self) -> str:
@@ -158,25 +220,69 @@ class Settings:
         return int(self.get("forecast", "horizon", default=5))
 
     def build_llm_config(self) -> Dict[str, Any]:
-        """Собрать dict конфигурации для LLMProviderFactory из config.yaml."""
+        """Собрать dict конфигурации для LLMProviderFactory.
+
+        Ключи резолвятся через CredentialService (ТЗ §4.2) — в YAML
+        после миграции их нет. Недостающие провайдеры (openai/anthropic)
+        добавляются автоматически; enabled = есть ключ.
+        """
+        from gmod.infrastructure.credentials.credential_service import (
+            get_credential_service,
+        )
+        try:
+            creds = get_credential_service()
+        except Exception:
+            creds = None
+
+        def _key(account: str, yaml_key: str) -> str:
+            if creds is not None:
+                try:
+                    return creds.get_key(account, yaml_key)
+                except Exception:
+                    pass
+            return yaml_key
+
         providers = []
+        seen = set()
         for p in self.llm_providers:
             name = p.get("name", "").lower()
             enabled = p.get("enabled", False)
             entry: Dict[str, Any] = {"name": name, "enabled": enabled}
+            seen.add(name)
 
             if name == "ollama":
                 entry["url"] = p.get("url", DEFAULT_OLLAMA_URL)
                 entry["model"] = p.get("model", DEFAULT_OLLAMA_MODEL)
-                entry["api_key"] = p.get("api_key", "") or ""
+                entry["api_key"] = _key("ollama", p.get("api_key", "") or "")
             elif name == "groq":
-                entry["api_key"] = p.get("api_key", "") or DEFAULT_GROQ_API_KEY
+                entry["api_key"] = _key("groq", p.get("api_key", "") or "")
                 entry["model"] = p.get("model", DEFAULT_GROQ_MODEL)
             elif name == "gemini":
-                entry["api_key"] = p.get("api_key", "") or DEFAULT_GEMINI_API_KEY
+                entry["api_key"] = _key("gemini", p.get("api_key", "") or "")
                 entry["model"] = p.get("model", DEFAULT_GEMINI_MODEL)
+            elif name == "openai":
+                entry["api_key"] = _key("openai", p.get("api_key", "") or "")
+                entry["model"] = p.get("model", "gpt-4o-mini")
+                entry["url"] = p.get("url", "https://api.openai.com/v1")
+            elif name == "anthropic":
+                entry["api_key"] = _key("anthropic", p.get("api_key", "") or "")
+                entry["model"] = p.get("model", "claude-sonnet-4-20250514")
+            elif name == "openrouter":
+                entry["api_key"] = _key("openrouter", p.get("api_key", "") or "")
+                entry["model"] = p.get("model", "openai/gpt-oss-20b")
+                entry["url"] = p.get("url", "https://openrouter.ai/api/v1")
 
             providers.append(entry)
+
+        # Новые провайдеры, которых нет в YAML: добавляем, enabled = есть ключ.
+        for name, model, extra in (
+            ("openai", "gpt-4o-mini", {"url": "https://api.openai.com/v1"}),
+            ("anthropic", "claude-sonnet-4-20250514", {}),
+        ):
+            if name not in seen:
+                key = _key(name, "")
+                providers.append({"name": name, "enabled": bool(key),
+                                  "model": model, "api_key": key, **extra})
 
         return {
             "llm": {

@@ -1138,99 +1138,60 @@ class MainWindow(QMainWindow):
         if hasattr(self, "llm_status_label"):
             QTimer.singleShot(0, self._on_check_llm_status)
 
-    def _fetch_groq_models_for_chat(self) -> None:
-        """Подтянуть список моделей Groq (GET /openai/v1/models по API-ключу)."""
+    def _fill_chat_models(self, provider_id: str, model_names: list) -> None:
+        """Заполнить комбобокс моделей чата (только если провайдер не сменился)."""
+        if not model_names:
+            return
         try:
-            from gmod.config.settings import get_settings
-            settings = get_settings()
-            key = settings.groq_api_key.strip()
-            if not key:
+            if self.provider_combo.currentText().lower() != provider_id:
                 return
-            import requests
-            resp = requests.get("https://api.groq.com/openai/v1/models",
-                                headers={"Authorization": f"Bearer {key}"}, timeout=10)
-            if resp.status_code != 200:
-                logger.warning("Groq models fetch: HTTP %s", resp.status_code)
+        except Exception:
+            return
+        current = self.model_combo.currentText()
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        self.model_combo.addItems(model_names)
+        if current in model_names:
+            self.model_combo.setCurrentText(current)
+        self.model_combo.blockSignals(False)
+        logger.info("%s: загружено %d моделей для чата", provider_id, len(model_names))
+
+    def _fetch_groq_models_for_chat(self) -> None:
+        """Модели Groq через provider.list_models (ТЗ §3.2)."""
+        try:
+            from gmod.infrastructure.llm.factory import (
+                build_provider, provider_entry_from_settings,
+            )
+            provider = build_provider("groq", provider_entry_from_settings("groq"))
+            if provider is None:
                 return
-            names = sorted(m.get("id", "") for m in resp.json().get("data", []) if m.get("id"))
-            if not names:
-                return
-            try:
-                if self.provider_combo.currentText() != "Groq":
-                    return
-            except Exception:
-                return
-            current = self.model_combo.currentText()
-            self.model_combo.blockSignals(True)
-            self.model_combo.clear()
-            self.model_combo.addItems(names)
-            if current in names:
-                self.model_combo.setCurrentText(current)
-            self.model_combo.blockSignals(False)
-            logger.info("Groq: загружено %d моделей для чата", len(names))
+            self._fill_chat_models("groq", provider.list_models())
         except Exception as e:
             logger.debug("Groq models fetch failed: %s", e)
 
     def _fetch_gemini_models_for_chat(self) -> None:
-        """Подтянуть список моделей Gemini (v1beta/models по API-ключу)."""
+        """Модели Gemini через provider.list_models (ТЗ §3.2)."""
         try:
-            from gmod.config.settings import get_settings
-            settings = get_settings()
-            key = settings.gemini_api_key.strip()
-            if not key:
+            from gmod.infrastructure.llm.factory import (
+                build_provider, provider_entry_from_settings,
+            )
+            provider = build_provider("gemini", provider_entry_from_settings("gemini"))
+            if provider is None:
                 return
-            import requests
-            resp = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
-                                params={"key": key}, timeout=10)
-            if resp.status_code != 200:
-                logger.warning("Gemini models fetch: HTTP %s", resp.status_code)
-                return
-            names = sorted(
-                m.get("name", "").replace("models/", "")
-                for m in resp.json().get("models", []) if m.get("name"))
-            # Только текстовые генеративные модели, без embedding/tts/image/live.
-            bad = ("embed", "tts", "image", "live", "audio", "translat", "veo", "research")
-            names = [n for n in names if not any(b in n for b in bad)]
-            if not names:
-                return
-            try:
-                if self.provider_combo.currentText() != "Gemini":
-                    return
-            except Exception:
-                return
-            current = self.model_combo.currentText()
-            self.model_combo.blockSignals(True)
-            self.model_combo.clear()
-            self.model_combo.addItems(names)
-            if current in names:
-                self.model_combo.setCurrentText(current)
-            self.model_combo.blockSignals(False)
-            logger.info("Gemini: загружено %d моделей для чата", len(names))
+            self._fill_chat_models("gemini", provider.list_models())
         except Exception as e:
             logger.debug("Gemini models fetch failed: %s", e)
 
     def _fetch_ollama_models_for_chat(self) -> None:
-        """Получить модели с Ollama для комбобокса чата."""
+        """Модели Ollama для чата через provider.list_models (ТЗ §3.2/§3.3)."""
         try:
-            from gmod.config.settings import get_settings
-            settings = get_settings()
-            url = settings.ollama_url.rstrip("/") + "/api/tags"
-            import requests
-            resp = requests.get(url, timeout=5)
-            if resp.status_code == 200:
-                models = resp.json().get("models", [])
-                model_names = [m.get("name", "") for m in models if m.get("name")]
-                if model_names:
-                    current = self.model_combo.currentText()
-                    self.model_combo.blockSignals(True)
-                    self.model_combo.clear()
-                    self.model_combo.addItems(model_names)
-                    if current in model_names:
-                        self.model_combo.setCurrentText(current)
-                    else:
-                        self.model_combo.setCurrentIndex(0)
-                    self.model_combo.blockSignals(False)
-                    logger.info("Ollama: загружено %d моделей для чата", len(model_names))
+            from gmod.infrastructure.llm.factory import (
+                build_provider, provider_entry_from_settings,
+            )
+            provider = build_provider("ollama", provider_entry_from_settings("ollama"))
+            if provider is None:
+                return
+            self._fill_chat_models("ollama", provider.list_models())
         except Exception as e:
             logger.debug("Ollama models fetch failed: %s", e)
 
@@ -3602,99 +3563,89 @@ class MainWindow(QMainWindow):
         self.central_tabs.setCurrentWidget(tab)
 
     def _check_provider_connection(self, provider_name: str, parent) -> None:
-        """Проверка соединения с провайдером (Настройки → AI-провайдеры).
+        """Проверка соединения БЕЗ generation prompt + тестовый inference.
 
-        Показывает понятное сообщение: «Нейросеть работает» /
-        «Нейросеть недоступна. API ключ не валидный» / ...
+        ТЗ §6: показывает 4-уровневый статус (Connection/Authentication/
+        Models/Generation), generation — только явной кнопкой.
         """
         from PySide6.QtWidgets import QMessageBox
 
         try:
-            from gmod.config.settings import get_settings
-
-            settings = get_settings()
-            if provider_name == "ollama":
-                from gmod.infrastructure.llm.ollama_provider import OllamaProvider
-
-                provider = OllamaProvider(config={
-                    "url": settings.ollama_url,
-                    "model": settings.ollama_model,
-                    "api_key": settings.ollama_api_key,
-                })
-            elif provider_name == "groq":
-                from gmod.infrastructure.llm.groq_provider import GroqProvider
-
-                provider = GroqProvider(api_key=settings.groq_api_key,
-                                        config={"model": settings.groq_model})
-            else:
-                from gmod.infrastructure.llm.gemini_provider import GeminiProvider
-
-                provider = GeminiProvider(api_key=settings.gemini_api_key,
-                                          config={"model": settings.gemini_model})
-            # Используем расширенную проверку check_status, если есть
-            if hasattr(provider, "check_status"):
-                status = provider.check_status()
-                ok = status.ok
-                msg = status.message
-            else:
-                ok = provider.is_available()
-                msg = "Нейросеть работает" if ok else "Нейросеть недоступна"
-            QMessageBox.information(
-                parent, "Проверка соединения",
-                f"{provider_name}: {msg}")
+            from gmod.infrastructure.llm.factory import (
+                build_provider, provider_entry_from_settings,
+            )
+            provider = build_provider(provider_name,
+                                      provider_entry_from_settings(provider_name))
+            if provider is None:
+                QMessageBox.warning(parent, "Проверка соединения",
+                                    f"Неизвестный провайдер: {provider_name}")
+                return
+            status = provider.check_connection()
+            lines = [f"{provider_name}: {status.message}"]
+            detail = status.detail
+            if detail:
+                lines.append(f"Детали: {detail}")
+            lines.append("")
+            lines.append("Запустить тестовый inference (тратит токены)?")
+            reply = QMessageBox.question(parent, "Проверка соединения",
+                                         "\n".join(lines),
+                                         QMessageBox.Yes | QMessageBox.No,
+                                         QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                try:
+                    answer = provider.test_inference()
+                    QMessageBox.information(parent, "Тестовый inference",
+                                            f"OK, ответ модели:\n{answer[:500]}")
+                except Exception as e:
+                    from gmod.infrastructure.llm.health import classify_exception
+                    _reason, msg = classify_exception(e)
+                    QMessageBox.warning(parent, "Тестовый inference",
+                                        f"{msg}\n{e}"[:600])
         except Exception as e:
             from PySide6.QtWidgets import QMessageBox
 
             QMessageBox.warning(parent, "Проверка соединения", f"Ошибка: {e}")
 
     def _fetch_ollama_models(self, url_widget, parent_tab) -> None:
-        """Получить список моделей с Ollama сервера и заполнить комбобокс."""
+        """Список моделей Ollama через provider.list_models (ТЗ §3.2/§3.3)."""
         from PySide6.QtWidgets import QMessageBox, QApplication
-        import requests
+        from gmod.infrastructure.llm.factory import build_provider
 
         url = url_widget.text().strip() or "http://localhost:11434"
-        if not url.endswith("/api/tags"):
-            api_url = url.rstrip("/") + "/api/tags"
-        else:
-            api_url = url
-
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            resp = requests.get(api_url, timeout=10)
-            if resp.status_code == 200:
-                models = resp.json().get("models", [])
-                model_names = [m.get("name", "") for m in models if m.get("name")]
-                if not model_names:
-                    QMessageBox.warning(parent_tab, "Модели не найдены",
-                        "Ollama ответил, но список моделей пуст.\n"
-                        "Проверьте, что модели установлены: `ollama pull <model>`")
-                    return
-                # Находим комбобокс модели в той же вкладке
-                for pname, entry in self._settings_W.get("prov", {}).items():
-                    if pname == "ollama" and "model_combo" in entry:
-                        combo = entry["model_combo"]
-                        current = combo.currentText()
-                        combo.blockSignals(True)
-                        combo.clear()
-                        combo.addItems(model_names)
-                        if current in model_names:
-                            combo.setCurrentText(current)
-                        else:
-                            combo.setCurrentIndex(0)
-                        combo.blockSignals(False)
-                        break
-                QMessageBox.information(parent_tab, "Готово",
-                    f"Получено моделей: {len(model_names)}")
-            elif resp.status_code == 401:
-                QMessageBox.warning(parent_tab, "Ошибка",
-                    "Нужен API-ключ (Ollama Cloud). Введите ключ в поле выше.")
-            else:
-                QMessageBox.warning(parent_tab, "Ошибка",
-                    f"HTTP {resp.status_code}: {resp.text[:200]}")
-        except requests.exceptions.ConnectionError:
-            QMessageBox.warning(parent_tab, "Ошибка соединения",
-                f"Не удалось подключиться к {url}.\n"
-                "Проверьте, что Ollama запущена: `ollama serve`")
+            provider = build_provider("ollama", {"name": "ollama", "enabled": True,
+                                                 "url": url, "model": ""})
+            if provider is None:
+                return
+            try:
+                model_names = provider.list_models()
+            except Exception as e:
+                from gmod.infrastructure.llm.health import classify_exception
+                _reason, msg = classify_exception(e)
+                QMessageBox.warning(parent_tab, "Ошибка", msg)
+                return
+            if not model_names:
+                QMessageBox.warning(parent_tab, "Модели не найдены",
+                    "Ollama ответил, но список моделей пуст.\n"
+                    "Проверьте, что модели установлены: `ollama pull <model>`")
+                return
+            # Находим комбобокс модели в той же вкладке
+            for pname, entry in self._settings_W.get("prov", {}).items():
+                if pname == "ollama" and "model_combo" in entry:
+                    combo = entry["model_combo"]
+                    current = combo.currentText()
+                    combo.blockSignals(True)
+                    combo.clear()
+                    combo.addItems(model_names)
+                    if current in model_names:
+                        combo.setCurrentText(current)
+                    else:
+                        combo.setCurrentIndex(0)
+                    combo.blockSignals(False)
+                    break
+            QMessageBox.information(parent_tab, "Готово",
+                f"Получено моделей: {len(model_names)}")
         except Exception as e:
             QMessageBox.warning(parent_tab, "Ошибка", f"{type(e).__name__}: {e}")
         finally:
@@ -3716,9 +3667,9 @@ class MainWindow(QMainWindow):
         QMessageBox.information(parent_tab, "Готово", f"Получено моделей: {len(names)}")
 
     def _fetch_groq_models_for_settings(self, parent_tab) -> None:
-        """Обновить список моделей Groq (ключ берётся из поля настроек)."""
+        """Список моделей Groq через provider.list_models (ключ из поля)."""
         from PySide6.QtWidgets import QMessageBox, QApplication
-        import requests
+        from gmod.infrastructure.llm.factory import build_provider
 
         entry = self._settings_W.get("prov", {}).get("groq", {})
         key_widget = entry.get("api_key")
@@ -3728,16 +3679,17 @@ class MainWindow(QMainWindow):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            resp = requests.get("https://api.groq.com/openai/v1/models",
-                                headers={"Authorization": f"Bearer {key}"}, timeout=10)
-            if resp.status_code in (401, 403):
-                QMessageBox.warning(parent_tab, "Ошибка",
-                    "Нейросеть недоступна. API ключ не валидный.")
+            provider = build_provider("groq", {"name": "groq", "enabled": True,
+                                               "api_key": key, "model": ""})
+            if provider is None:
                 return
-            if resp.status_code != 200:
-                QMessageBox.warning(parent_tab, "Ошибка", f"HTTP {resp.status_code}")
+            try:
+                names = provider.list_models()
+            except Exception as e:
+                from gmod.infrastructure.llm.health import classify_exception
+                _reason, msg = classify_exception(e)
+                QMessageBox.warning(parent_tab, "Ошибка", msg)
                 return
-            names = sorted(m.get("id", "") for m in resp.json().get("data", []) if m.get("id"))
             if not names:
                 QMessageBox.warning(parent_tab, "Модели не найдены", "Groq вернул пустой список.")
                 return
@@ -3748,9 +3700,9 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
 
     def _fetch_gemini_models_for_settings(self, parent_tab) -> None:
-        """Обновить список моделей Gemini (ключ берётся из поля настроек)."""
+        """Список моделей Gemini через provider.list_models (ключ из поля)."""
         from PySide6.QtWidgets import QMessageBox, QApplication
-        import requests
+        from gmod.infrastructure.llm.factory import build_provider
 
         entry = self._settings_W.get("prov", {}).get("gemini", {})
         key_widget = entry.get("api_key")
@@ -3760,21 +3712,17 @@ class MainWindow(QMainWindow):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            resp = requests.get("https://generativelanguage.googleapis.com/v1beta/models",
-                                params={"key": key}, timeout=10)
-            if resp.status_code in (400, 401, 403):
-                QMessageBox.warning(parent_tab, "Ошибка",
-                    "Нейросеть недоступна. API ключ не валидный "
-                    "(ключ Google AI Studio начинается с AIza...).")
+            provider = build_provider("gemini", {"name": "gemini", "enabled": True,
+                                                 "api_key": key, "model": ""})
+            if provider is None:
                 return
-            if resp.status_code != 200:
-                QMessageBox.warning(parent_tab, "Ошибка", f"HTTP {resp.status_code}")
+            try:
+                names = provider.list_models()
+            except Exception as e:
+                from gmod.infrastructure.llm.health import classify_exception
+                _reason, msg = classify_exception(e)
+                QMessageBox.warning(parent_tab, "Ошибка", msg)
                 return
-            names = sorted(
-                m.get("name", "").replace("models/", "")
-                for m in resp.json().get("models", []) if m.get("name"))
-            bad = ("embed", "tts", "image", "live", "audio", "translat", "veo", "research")
-            names = [n for n in names if not any(b in n for b in bad)]
             if not names:
                 QMessageBox.warning(parent_tab, "Модели не найдены", "Gemini вернул пустой список.")
                 return

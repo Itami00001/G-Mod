@@ -18,6 +18,17 @@ logger = logging.getLogger(__name__)
 
 class OllamaProvider(BaseLLMProvider):
     """Провайдер Ollama для локальных LLM."""
+
+    auth_type = "bearer"  # Ollama Cloud; для local ключ не шлём (см. _auth_headers)
+
+    def _auth_headers(self) -> Dict[str, str]:
+        """Единая авторизация (ТЗ §3.3): local — без ключа, cloud — Bearer.
+
+        Применяется ко ВСЕМ запросам: /api/tags, /api/chat, /api/generate.
+        """
+        if getattr(self, "_local_mode", True):
+            return {}
+        return super()._auth_headers()
     
     def __init__(self, api_key: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
         """Инициализация Ollama провайдера.
@@ -161,9 +172,7 @@ class OllamaProvider(BaseLLMProvider):
         """
         try:
             import requests
-            headers = {}
-            if self.api_key and not self._local_mode:
-                headers["Authorization"] = f"Bearer {self.api_key}"
+            headers = self._auth_headers()
             response = requests.get(f"{self.url}/api/tags", timeout=5, headers=headers)
             ok = response.status_code == 200
             if ok:
@@ -175,12 +184,11 @@ class OllamaProvider(BaseLLMProvider):
             logger.warning(f"Ollama not available at {self.url}: {e}")
             return False
 
-    def check_status(self):
-        """Расширенная проверка с понятным сообщением для UI.
+    def check_connection(self):
+        """Лёгкая проверка: сервер + модель (без generation prompt, ТЗ §6).
 
         Returns:
-            ProviderStatus с message вида "Нейросеть работает" /
-            "Нейросеть недоступна. ...".
+            ProviderStatus.
         """
         from gmod.infrastructure.llm.health import (
             MSG_OK, ProviderStatus, classify_exception,
@@ -188,13 +196,12 @@ class OllamaProvider(BaseLLMProvider):
 
         use_litellm = bool(self.config.get("use_litellm", False)) if self.config else False
         if use_litellm and not LITELLM_AVAILABLE:
+            from gmod.infrastructure.llm.health import MSG_NO_LIB
             return ProviderStatus(False, MSG_NO_LIB, "no_lib", "litellm not installed")
         try:
             import requests
-            headers = {}
-            if self.api_key and not self._local_mode:
-                headers["Authorization"] = f"Bearer {self.api_key}"
-            resp = requests.get(f"{self.url}/api/tags", timeout=5, headers=headers)
+            resp = requests.get(f"{self.url}/api/tags", timeout=5,
+                                headers=self._auth_headers())
             if resp.status_code == 200:
                 # Сервер жив — проверяем, установлена ли нужная модель.
                 try:
@@ -202,10 +209,9 @@ class OllamaProvider(BaseLLMProvider):
                 except Exception:
                     names = []
                 if names and not self._model_installed(names):
-                    hint = (
-                        f"Ollama доступна, но модель '{self.model}' не установлена. "
-                        f"Выполните: ollama pull {self.model}"
-                    )
+                    from gmod.infrastructure.llm.health import MSG_MODEL_MISSING
+                    hint = (MSG_MODEL_MISSING + f": '{self.model}'. "
+                            f"Выполните: ollama pull {self.model}")
                     logger.warning("Ollama: %s (установлены: %s)", hint, names)
                     return ProviderStatus(False, hint, "model_missing", f"have={names}")
                 logger.info("Ollama: проверка соединения — OK")
@@ -215,12 +221,33 @@ class OllamaProvider(BaseLLMProvider):
                 logger.warning("Ollama: API ключ не валидный (HTTP %s)", resp.status_code)
                 return ProviderStatus(False, MSG_BAD_KEY, "bad_key", f"HTTP {resp.status_code}")
             return ProviderStatus(
-                False, f"Нейросеть недоступна. HTTP {resp.status_code}",
-                "unknown", f"HTTP {resp.status_code}",
+                False, f"⚠ Соединение отсутствует. HTTP {resp.status_code}",
+                "no_connection", f"HTTP {resp.status_code}",
             )
         except Exception as e:
             reason, msg = classify_exception(e)
             return ProviderStatus(False, msg, reason, str(e)[:300])
+
+    def check_status(self):
+        """Алиас check_connection для совместимости."""
+        return self.check_connection()
+
+    def validate_credentials(self):
+        """Local — ключ не нужен; Cloud — ключ обязателен (ТЗ §3.3)."""
+        from gmod.infrastructure.llm.health import (
+            MSG_NO_KEY, MSG_OK, ProviderStatus,
+        )
+        if getattr(self, "_local_mode", True):
+            return ProviderStatus(True, MSG_OK, "ok", "local, no key required")
+        if not (self.api_key or "").strip():
+            return ProviderStatus(False, MSG_NO_KEY, "no_key", "cloud needs key")
+        return ProviderStatus(True, MSG_OK, "ok", "key present")
+
+    def test_inference(self, prompt: str = "Ответь одним словом: тест.") -> str:
+        """Явный тестовый inference (ТЗ §6: отдельная операция)."""
+        logger.info("Ollama: тестовый inference (модель %s)", self.model)
+        return self.generate(prompt, max_tokens=50, temperature=0.0)
+
     def _model_installed(self, server_models: list) -> bool:
         """Есть ли нужная модель на сервере (точное имя или базовое без тега)."""
         want = (self.model or "").strip()
@@ -231,21 +258,18 @@ class OllamaProvider(BaseLLMProvider):
         base = want.split(":")[0]
         return any(m == base or m.split(":")[0] == base for m in server_models)
 
+    def list_models(self) -> list:
+        """Список моделей Ollama (GET /api/tags, с единой авторизацией, ТЗ §3.3)."""
+        import requests
+        resp = requests.get(f"{self.url}/api/tags", timeout=5,
+                            headers=self._auth_headers())
+        resp.raise_for_status()
+        return [m["name"] for m in resp.json().get("models", []) if m.get("name")]
+
     def get_available_models(self) -> list:
-        """Получение списка доступных моделей."""
-        if not self.is_available():
-            return []
-        
+        """Получение списка доступных моделей (алиас list_models)."""
         try:
-            import requests
-            headers = {}
-            if self.api_key and not self._local_mode:
-                headers["Authorization"] = f"Bearer {self.api_key}"
-            response = requests.get(f"{self.url}/api/tags", timeout=5, headers=headers)
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                return [model["name"] for model in models]
+            return self.list_models()
         except Exception as e:
             logger.error(f"Error getting Ollama models: {e}")
-        
-        return []
+            return []

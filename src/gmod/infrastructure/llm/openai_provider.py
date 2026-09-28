@@ -1,7 +1,6 @@
-"""Groq провайдер для LLM (ТЗ §3, §6).
+"""OpenAI провайдер для LLM (ТЗ §3.1, расширяемость).
 
-Проверка соединения — лёгкий GET /openai/v1/models БЕЗ generation prompt.
-Тестовый inference — отдельная явная операция test_inference().
+Проверка соединения — лёгкий GET /v1/models БЕЗ generation prompt.
 """
 
 import logging
@@ -10,88 +9,69 @@ from typing import Optional, Dict, Any, List
 try:
     import litellm
     LITELLM_AVAILABLE = True
-except Exception as _litellm_import_error:  # noqa: BLE001 — в frozen-exe tiktoken падает с ValueError
+except Exception as _litellm_import_error:  # noqa: BLE001
     litellm = None  # type: ignore
     LITELLM_AVAILABLE = False
-    logging.warning("litellm not available, Groq provider will not work: %s", _litellm_import_error)
+    logging.warning("litellm not available, OpenAI provider will not work: %s",
+                    _litellm_import_error)
 
 from gmod.infrastructure.llm.base import BaseLLMProvider
 
 logger = logging.getLogger(__name__)
 
-MODELS_URL = "https://api.groq.com/openai/v1/models"
+MODELS_URL = "https://api.openai.com/v1/models"
 
 
-class GroqProvider(BaseLLMProvider):
-    """Провайдер Groq для быстрых LLM."""
+class OpenAIProvider(BaseLLMProvider):
+    """Провайдер OpenAI."""
 
     auth_type = "bearer"
 
     def __init__(self, api_key: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
-        """Инициализация Groq провайдера.
-
-        Args:
-            api_key: API ключ для Groq
-            config: Конфигурация с model
-        """
         super().__init__(api_key, config)
-        from gmod.config.constants import DEFAULT_GROQ_MODEL
-        self.model = config.get("model", DEFAULT_GROQ_MODEL) if config else DEFAULT_GROQ_MODEL
-
+        self.model = (config.get("model", "gpt-4o-mini") if config else "gpt-4o-mini")
+        self.base_url = (config.get("url", config.get("base_url", MODELS_URL.rsplit("/v1/", 1)[0] + "/v1"))
+                         if config else "https://api.openai.com/v1")
         if not self.api_key:
-            logger.warning("Groq API key not provided")
+            logger.warning("OpenAI API key not provided")
 
     def generate(self, prompt: str, **kwargs) -> str:
-        """Генерация ответа через Groq.
-
-        Args:
-            prompt: Промпт для генерации
-            **kwargs: Дополнительные параметры
-
-        Returns:
-            Сгенерированный текст
-        """
         if not LITELLM_AVAILABLE:
-            raise RuntimeError("litellm not available, cannot use Groq provider")
-
+            raise RuntimeError("litellm not available, cannot use OpenAI provider")
         if not self.api_key:
-            raise ValueError("Groq API key not provided")
-
+            raise ValueError("OpenAI API key not provided")
         try:
             extra = dict(kwargs)
             temperature = extra.pop("temperature", 0.7)
             max_tokens = extra.pop("max_tokens", 2000)
             response = litellm.completion(
-                model=f"groq/{self.model}",
+                model=self.model if "/" in self.model else f"openai/{self.model}",
                 messages=[{"role": "user", "content": prompt}],
                 api_key=self.api_key,
+                base_url=self.base_url,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 **extra,
             )
-
             content = response["choices"][0]["message"]["content"] or ""
             if not content:
-                raise RuntimeError("Groq вернул пустой ответ (возможно, мал max_tokens для reasoning-модели)")
+                raise RuntimeError("OpenAI вернул пустой ответ")
             return content
-
         except Exception as e:
-            logger.error(f"Groq generation error: {e}")
+            logger.error(f"OpenAI generation error: {e}")
             raise
 
-    # ---------------- единый интерфейс (ТЗ §3.2, §6) ----------------
-
     def list_models(self) -> List[str]:
-        """Список моделей Groq (GET /openai/v1/models, без генерации)."""
+        """Список моделей OpenAI (без генерации)."""
         import requests
-        resp = requests.get(MODELS_URL, headers=self._auth_headers(), timeout=10)
+        resp = requests.get(f"{self.base_url.rstrip('/')}/models",
+                            headers=self._auth_headers(), timeout=10)
         if resp.status_code in (401, 403):
-            raise RuntimeError("Нейросеть недоступна. API ключ не валидный (Groq 401/403)")
+            raise RuntimeError("Нейросеть недоступна. API ключ не валидный (OpenAI 401/403)")
         resp.raise_for_status()
         return sorted(m.get("id", "") for m in resp.json().get("data", []) if m.get("id"))
 
     def check_connection(self):
-        """Лёгкая проверка: сервер + ключ + модель (без generation)."""
         from gmod.infrastructure.llm.health import (
             MSG_NO_LIB, ProviderStatus, classify_exception,
         )
@@ -105,17 +85,14 @@ class GroqProvider(BaseLLMProvider):
         except Exception as e:
             reason, msg = classify_exception(e)
             return ProviderStatus(False, msg, reason, str(e)[:300])
-        if names and self.model not in names:
+        if names and self.model not in names and not self.model.startswith("openai/"):
             from gmod.infrastructure.llm.health import MSG_MODEL_MISSING
             hint = MSG_MODEL_MISSING + f": '{self.model}'. Обновите список моделей (🔄)."
-            logger.warning("Groq: %s", hint)
             return ProviderStatus(False, hint, "model_missing", f"have={len(names)}")
         from gmod.infrastructure.llm.health import MSG_OK
-        logger.info("Groq: проверка соединения — OK")
         return ProviderStatus(True, MSG_OK, "ok", f"model={self.model}")
 
     def validate_credentials(self):
-        """Проверка ключа через /models (без генерации)."""
         from gmod.infrastructure.llm.health import (
             MSG_BAD_KEY, MSG_NO_KEY, MSG_OK, ProviderStatus, classify_exception,
         )
@@ -131,30 +108,19 @@ class GroqProvider(BaseLLMProvider):
             reason, msg = classify_exception(e)
             if reason == "bad_key":
                 return ProviderStatus(False, MSG_BAD_KEY, "bad_key", str(e)[:200])
-            # Сервер недоступен — про ключ ничего сказать нельзя, но формат ок.
-            logger.debug("Groq validate via models failed (%s), key format ok", reason)
             return ProviderStatus(True, MSG_OK, "ok", "key format ok, server unreachable")
 
     def test_inference(self, prompt: str = "Ответь одним словом: тест.") -> str:
-        """Явный тестовый inference (ТЗ §6: отдельная операция)."""
-        logger.info("Groq: тестовый inference (модель %s)", self.model)
         return self.generate(prompt, max_tokens=50, temperature=0.0)
 
-    # ---------------- совместимость ----------------
-
     def validate_api_key(self) -> bool:
-        """Быстрая форматная проверка ключа без сетевого запроса."""
-        if not self.api_key:
-            return False
-        return len(self.api_key.strip()) >= 10
+        return bool(self.api_key) and len(self.api_key.strip()) >= 10
 
     def is_available(self) -> bool:
-        """Проверка доступности (лёгкая, без генерации)."""
         try:
             return self.check_connection().ok
         except Exception:
             return False
 
     def check_status(self):
-        """Алиас check_connection для совместимости."""
         return self.check_connection()

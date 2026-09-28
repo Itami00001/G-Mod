@@ -400,9 +400,13 @@ class TestSettings:
         assert s.temperature == 0.7
         assert s.log_level == "INFO"
 
-    def test_loads_from_yaml(self, tmp_path):
+    def test_loads_from_yaml(self, tmp_path, monkeypatch):
         from gmod.config.settings import Settings, reset_settings
         import yaml
+
+        # Изоляция от реального OS Credential Store (ТЗ §4: приоритет keyring).
+        monkeypatch.setenv("GMOD_CREDENTIAL_SERVICE", "GModTestIsolated")
+        reset_settings()
 
         cfg = {
             "llm": {

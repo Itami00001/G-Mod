@@ -7,8 +7,22 @@ from gmod.infrastructure.llm.base import BaseLLMProvider
 from gmod.infrastructure.llm.ollama_provider import OllamaProvider
 from gmod.infrastructure.llm.groq_provider import GroqProvider
 from gmod.infrastructure.llm.gemini_provider import GeminiProvider
+from gmod.infrastructure.llm.openai_provider import OpenAIProvider
+from gmod.infrastructure.llm.anthropic_provider import AnthropicProvider
 
 logger = logging.getLogger(__name__)
+
+# Расширяемый реестр (ТЗ §3.1): новые провайдеры добавляются одной строкой.
+PROVIDER_CLASSES = {
+    "ollama": OllamaProvider,
+    "groq": GroqProvider,
+    "gemini": GeminiProvider,
+    "openai": OpenAIProvider,
+    "anthropic": AnthropicProvider,
+    # OpenRouter — OpenAI-совместимый API, едет на том же адаптере
+    # с другим base_url (задаётся в Настройках).
+    "openrouter": OpenAIProvider,
+}
 
 
 class LLMProviderFactory:
@@ -79,12 +93,8 @@ class LLMProviderFactory:
         Returns:
             Экземпляр провайдера или None
         """
-        provider_classes = {
-            "ollama": OllamaProvider,
-            "groq": GroqProvider,
-            "gemini": GeminiProvider
-        }
-        
+        provider_classes = PROVIDER_CLASSES
+
         provider_class = provider_classes.get(name.lower())
         if not provider_class:
             logger.warning(f"Unknown provider: {name}")
@@ -98,7 +108,21 @@ class LLMProviderFactory:
             provider_config.setdefault("api_key", api_key)
 
         return provider_class(api_key=api_key, config=provider_config)
-    
+
+    def get_provider_by_name(self, name: str) -> Optional[BaseLLMProvider]:
+        """Найти включённый провайдер по имени (для UI: модели, проверки)."""
+        want = (name or "").lower()
+        for provider in self._providers:
+            provider_id = provider.config.get("provider_id", "") if provider.config else ""
+            if not provider_id:
+                for pid, pcls in PROVIDER_CLASSES.items():
+                    if isinstance(provider, pcls):
+                        provider_id = pid
+                        break
+            if provider_id == want or provider.get_name().lower().startswith(want):
+                return provider
+        return None
+
     def get_provider(self) -> Optional[BaseLLMProvider]:
         """Получение первого доступного провайдера.
         
@@ -277,3 +301,39 @@ class LLMProviderFactory:
         logger.info("Refreshing LLM providers availability")
         self._providers = []
         self._initialize_providers()
+
+
+def build_provider(name: str, entry: Dict[str, Any]) -> Optional[BaseLLMProvider]:
+    """Создать провайдера вне фабрики (для UI: списки моделей, проверки).
+
+    Авторизация — только внутри провайдера (ТЗ §3.2: дубли в UI запрещены).
+    """
+    factory = LLMProviderFactory.__new__(LLMProviderFactory)
+    factory.config = {}
+    factory._providers = []
+    return factory._create_provider(name, entry)
+
+
+def provider_entry_from_settings(name: str) -> Dict[str, Any]:
+    """Собрать entry провайдера из Settings (ключи — через CredentialService)."""
+    from gmod.config.settings import get_settings
+    settings = get_settings()
+    name = (name or "").lower()
+    entry: Dict[str, Any] = {"name": name, "enabled": True}
+    if name == "ollama":
+        entry["url"] = settings.ollama_url
+        entry["model"] = settings.ollama_model
+        entry["api_key"] = settings.ollama_api_key
+    elif name == "groq":
+        entry["api_key"] = settings.groq_api_key
+        entry["model"] = settings.groq_model
+    elif name == "gemini":
+        entry["api_key"] = settings.gemini_api_key
+        entry["model"] = settings.gemini_model
+    elif name == "openai":
+        entry["api_key"] = settings.openai_api_key
+        entry["model"] = settings.openai_model
+    elif name == "anthropic":
+        entry["api_key"] = settings.anthropic_api_key
+        entry["model"] = settings.anthropic_model
+    return entry
