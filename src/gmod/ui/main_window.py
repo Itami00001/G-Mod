@@ -169,6 +169,10 @@ class MainWindow(QMainWindow):
                 ),
             )
             self._populate_repo_dock(repo)
+            try:
+                self._set_repo_state("ACTIVE", repo.id)
+            except Exception:
+                pass
             self.status_bar.showMessage(f"Восстановлен проект: {repo_id}")
         except Exception as e:
             logger.error(f"Error restoring last repository: {e}")
@@ -460,6 +464,26 @@ class MainWindow(QMainWindow):
         url_layout.addWidget(self.url_input, 1)
         url_layout.addWidget(self.url_load_btn)
         right_layout.addWidget(self.repo_url_widget)
+
+        # Статус lifecycle: текущий репозиторий + действия (ТЗ §4.2).
+        self.repo_status_widget = QWidget()
+        status_layout = QHBoxLayout(self.repo_status_widget)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        self.repo_state_label = QLabel("Текущий репозиторий: —")
+        self.repo_state_label.setWordWrap(True)
+        status_layout.addWidget(self.repo_state_label, 1)
+        switch_btn = QPushButton("Переключить")
+        switch_btn.setToolTip("Открыть другой репозиторий (ТЗ §4.6)")
+        switch_btn.clicked.connect(self._on_switch_repository)
+        status_layout.addWidget(switch_btn)
+        reload_btn = QPushButton("Обновить")
+        reload_btn.clicked.connect(self._reload_repository)
+        status_layout.addWidget(reload_btn)
+        close_btn = QPushButton("Закрыть")
+        close_btn.clicked.connect(self._close_repository)
+        status_layout.addWidget(close_btn)
+        right_layout.addWidget(self.repo_status_widget)
+        self._repo_state = "NO_REPOSITORY"
         
         # Вкладки репозитория (показываются после загрузки)
         self.repo_tabs = QTabWidget()
@@ -4325,60 +4349,140 @@ class MainWindow(QMainWindow):
             logger.error(f"Error opening log: {e}")
 
     def _on_load_repository(self) -> None:
-        """Загрузка репозитория (URL или локальный путь)."""
+        """Загрузка/переключение репозитория по lifecycle (ТЗ §4).
+
+        Состояния: NO_REPOSITORY / LOADING / ACTIVE / SWITCHING / ERROR.
+        Повторный clone активного репозитория запрещён, current_repo_id
+        не меняется до успешного завершения операции.
+        """
         from pathlib import Path
+        from gmod.services.repository_service import (
+            RepositoryService, NO_REPOSITORY, LOADING, ACTIVE, SWITCHING, ERROR,
+        )
 
         url_text = self.url_input.text().strip()
         if not url_text:
-            # Фолбэк — диалог выбора папки
             repo_dir = QFileDialog.getExistingDirectory(self, "Выберите локальный Git-репозиторий")
             if not repo_dir:
                 return
-            path = Path(repo_dir)
-            is_clone = False
-        else:
-            path = Path(url_text)
-            is_clone = not path.exists()
+            url_text = repo_dir
 
+        current_id = self._get_current_repo_id() or ""
+        service = RepositoryService(db=self.db)
+        decision = service.resolve_target(url_text, current_id=current_id)
+        action = decision.get("action", "invalid")
+        logger.info("repo lifecycle: %s -> %s", url_text, action)
+
+        if action == "invalid":
+            QMessageBox.warning(self, "Репозиторий", decision.get("message", "Пустой путь."))
+            return
+
+        if action in ("already_loaded", "same_url_loaded"):
+            # ТЗ §4.3: повторный clone запрещён.
+            reply = QMessageBox.question(
+                self, "Репозиторий",
+                f"{decision.get('message', 'Repository уже загружен.')}\nОткрыть существующий?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if reply == QMessageBox.Yes:
+                self._focus_repo_files()
+            return
+
+        if action == "other_git":
+            reply = QMessageBox.question(
+                self, "Репозиторий",
+                f"{decision.get('message')}\nRemote: {decision.get('url', '?')}\n"
+                "Открыть его? (Нет — выбрать другую папку)",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if reply != QMessageBox.Yes:
+                return
+            self._switch_to_repo({"path": decision["path"], "url": decision.get("url", "")})
+            return
+
+        if action == "nonempty_dir":
+            QMessageBox.warning(
+                self, "Репозиторий",
+                f"{decision.get('message')}\nПапка: {decision.get('path', '')}\n"
+                "Папка не будет удалена. Выберите пустую папку или Git-репозиторий.")
+            return
+
+        if action in ("open_local", "empty_dir"):
+            self._switch_to_repo({"path": decision["path"],
+                                  "url": decision.get("url", "")})
+            return
+
+        if action == "clone_safe":
+            self._set_repo_state(LOADING, "")
+            self.status_bar.showMessage("Клонирование репозитория...")
+            QApplication.processEvents()
+            try:
+                result = service.clone_safe(decision["url"], Path(decision["path"]))
+            finally:
+                pass
+            if result.get("status") != "success":
+                self._set_repo_state(ERROR, current_id)
+                QMessageBox.critical(
+                    self, "Ошибка",
+                    f"Не удалось клонировать репозиторий: {result.get('message', '')}\n"
+                    "Активный репозиторий не изменён.")
+                self._set_repo_state(ACTIVE if current_id else NO_REPOSITORY, current_id)
+                return
+            self._switch_to_repo({"path": result["path"], "url": decision["url"]})
+            return
+
+        QMessageBox.warning(self, "Репозиторий", f"Неизвестное действие: {action}")
+
+    def _set_repo_state(self, state: str, repo_id: str = "") -> None:
+        """Состояние lifecycle в правой шторке (ТЗ §4.1-4.2)."""
         try:
-            from gmod.infrastructure.git.git_parser import GitParser
+            from gmod.services.repository_service import ACTIVE
+            has_repo = bool(repo_id)
+            self.repo_url_widget.setVisible(not has_repo)
+            self.repo_status_widget.setVisible(has_repo)
+            if hasattr(self, "repo_tabs"):
+                self.repo_tabs.setVisible(has_repo)
+            if has_repo:
+                self.repo_state_label.setText(
+                    f"Текущий репозиторий: {repo_id} [{state}]")
+            self._repo_state = state
+        except Exception as e:
+            logger.debug("repo state: %s", e)
 
+    def _switch_to_repo(self, info: dict) -> None:
+        """Последовательность смены репозитория (ТЗ §4.6)."""
+        from gmod.services.repository_service import SWITCHING, ACTIVE, ERROR
+        from gmod.infrastructure.git.git_parser import GitParser
+
+        previous_id = self._get_current_repo_id() or ""
+        self._set_repo_state(SWITCHING, previous_id)
+        try:
+            # Flush Workspace + Save Chat (чат уже персистентен посообщенчески).
+            try:
+                self._persist_workspace()
+            except Exception:
+                pass
+            # Save AI model state (провайдер/модель уже в workspace views).
+            # Open/Clone new repository.
             parser = GitParser()
-            if is_clone:
-                # Клонирование по URL — в %APPDATA%\GMod\repos, а не в CWD,
-                # чтобы не засорять папку exe (dist) и не ломать пересборку.
-                from gmod.config.constants import DATA_DIR
-                local_base = Path(self.db.load_workspace_state("repos_base") or str(DATA_DIR / "repos"))
-                local_base.mkdir(parents=True, exist_ok=True)
-                self.status_bar.showMessage("Клонирование репозитория...")
-                QApplication.processEvents()
-                repo = parser.clone_repository(url_text, local_base / path.name)
-            else:
-                # Открытие локального репозитория
-                repo = parser.open_repository(path)
-            
+            repo = parser.open_repository(Path(info["path"]))
             parser.save_repository_info(repo)
             self.db.save_workspace_state("current_repo_id", repo.id)
             try:
                 self.workspace_service.save_state(repository_id=repo.id)
             except Exception:
                 pass
-            
-            # Скрываем поле URL, показываем вкладки
-            self.repo_url_widget.hide()
-            self.repo_tabs.show()
-            
+            # Close current repository (сброс UI-привязок к старому).
+            self._chat_snapshots = {}
+            self._last_context = None
+            # Create/Load Workspace + reload UI.
+            self._set_repo_state(ACTIVE, repo.id)
             self.status_bar.showMessage(f"Репозиторий загружен: {repo.name}")
             logger.info(f"Repository loaded: {repo.id} at {repo.local_path}")
             self._populate_repo_dock(repo)
-            
-            # Обновляем связанные вкладки
+            # Recalculate/Load metrics + Update AI Context (ТЗ §29).
             try:
                 self._refresh_metrics()
             except Exception:
                 pass
-            # Если метрик по репозиторию ещё нет — сразу считаем,
-            # чтобы вкладка не оставалась пустой после загрузки.
             try:
                 if hasattr(self, "metrics_model") and self.metrics_model.rowCount() == 0:
                     self._run_analysis_and_refresh_metrics()
@@ -4392,9 +4496,69 @@ class MainWindow(QMainWindow):
                 self._refresh_reports()
             except Exception:
                 pass
+            try:
+                self._refresh_ai_status()
+            except Exception:
+                pass
         except Exception as e:
-            logger.error(f"Error loading repository: {e}")
+            logger.error(f"Error switching repository: {e}", exc_info=True)
+            self._set_repo_state(ERROR, previous_id)
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть репозиторий: {e}")
+
+    def _on_switch_repository(self) -> None:
+        """Кнопка «Переключить»: показать поле URL для нового репозитория."""
+        try:
+            self.repo_url_widget.show()
+            self.url_input.setFocus()
+            self.status_bar.showMessage(
+                "Введите URL или путь нового репозитория и нажмите Загрузить")
+        except Exception as e:
+            logger.debug("switch ui: %s", e)
+
+    def _close_repository(self) -> None:
+        """Закрыть текущий репозиторий (workspace остаётся, ТЗ §4.2)."""
+        try:
+            self._persist_workspace()
+        except Exception:
+            pass
+        try:
+            self.db.save_workspace_state("current_repo_id", "")
+            self.workspace_service.save_state(repository_id="")
+        except Exception:
+            pass
+        self._chat_snapshots = {}
+        self._last_context = None
+        self.url_input.clear()
+        self._set_repo_state("NO_REPOSITORY", "")
+        self.status_bar.showMessage("Репозиторий закрыт")
+        try:
+            self._refresh_metrics()
+        except Exception:
+            pass
+
+    def _reload_repository(self) -> None:
+        """Обновить данные активного репозитория (ТЗ §4.2: Обновить)."""
+        repo_id = self._get_current_repo_id()
+        if not repo_id:
+            return
+        repo_path = self._get_repo_path(repo_id)
+        if not repo_path:
+            return
+        from pathlib import Path
+        from gmod.domain.entities import Repository
+        from gmod.infrastructure.git.git_parser import GitParser
+        try:
+            parser = GitParser()
+            repo = parser.open_repository(Path(repo_path))
+            parser.save_repository_info(repo)
+            self._populate_repo_dock(repo)
+            self._refresh_metrics()
+            self._refresh_graph()
+            self._refresh_reports()
+            self.status_bar.showMessage(f"Репозиторий обновлён: {repo.name}")
+        except Exception as e:
+            logger.error("repo reload: %s", e)
+            QMessageBox.warning(self, "Ошибка", f"Не удалось обновить: {e}")
 
     def _populate_repo_dock(self, repo) -> None:
         """Заполнение правой шторки реальными данными репозитория."""
