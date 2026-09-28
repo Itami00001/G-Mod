@@ -22,6 +22,8 @@ dependencies = [
     "keyring>=25.0.0",
     # "qdarktheme>=2.1.0",  # Temporarily disabled - requires Python 3.11+
     "pyyaml>=6.0.0",
+    # ТЗ v0.4 §10: массивы для ML-слоя с нуля (только numpy, без TF/Torch).
+    "numpy>=1.25.0",
 ]
 
 [project.optional-dependencies]
