@@ -281,30 +281,11 @@ class MainWindow(QMainWindow):
         self._create_central_tabs()
     
     def _create_top_bar(self, parent_layout: QVBoxLayout) -> None:
-        """Создание верхней панели с кнопками переключения шторок."""
+        """Создание верхней панели (стили — из gmod.qss, ТЗ §23)."""
         top_bar = QWidget()
+        top_bar.setObjectName("GModTopBar")
         top_bar.setFixedHeight(36)
-        top_bar.setStyleSheet("""
-            QWidget {
-                background: #2b2b2b;
-                border-bottom: 1px solid #3c3c3c;
-            }
-            QPushButton {
-                background: transparent;
-                border: none;
-                color: #cccccc;
-                font-size: 16px;
-                padding: 4px 8px;
-                border-radius: 3px;
-            }
-            QPushButton:hover {
-                background: #3c3c3c;
-            }
-            QPushButton:pressed {
-                background: #4c4c4c;
-            }
-        """)
-        
+
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(8, 0, 8, 0)
         top_layout.setSpacing(4)
@@ -327,7 +308,7 @@ class MainWindow(QMainWindow):
         
         # Заголовок приложения
         title_label = QLabel("GMod — Git Archaeologist")
-        title_label.setStyleSheet("color: #cccccc; font-weight: bold; font-size: 13px;")
+        title_label.setObjectName("GModTitle")
         top_layout.addWidget(title_label)
         
         top_layout.addStretch()
@@ -372,66 +353,77 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_content)
         left_layout.setContentsMargins(5, 5, 5, 5)
         
-        # Секция "Анализ"
-        analysis_section = self._create_collapsible_section("Анализ")
-        analysis_layout = self._get_section_layout(analysis_section)
-        
-        metrics_btn = QPushButton("Метрики")
-        metrics_btn.clicked.connect(lambda: self._switch_to_tab("Метрики"))
-        analysis_layout.addWidget(metrics_btn)
+        # Навигация по дизайн-системе (ТЗ §28).
+        def _nav_button(text: str, slot) -> QPushButton:
+            btn = QPushButton(text)
+            btn.clicked.connect(slot)
+            return btn
 
-        graph_btn = QPushButton("Граф")
-        graph_btn.clicked.connect(lambda: self._switch_to_tab("Граф"))
-        analysis_layout.addWidget(graph_btn)
-        
-        modes_btn = QPushButton("Режимы работы")
-        modes_btn.clicked.connect(lambda: self._switch_to_tab("Анализ"))
-        analysis_layout.addWidget(modes_btn)
-        
-        left_layout.addWidget(analysis_section)
-        
-        # Секция "Данные"
-        data_section = self._create_collapsible_section("Данные")
-        data_layout = self._get_section_layout(data_section)
-        
-        reports_btn = QPushButton("Отчёты")
-        reports_btn.clicked.connect(lambda: self._switch_to_tab("Отчёты"))
-        data_layout.addWidget(reports_btn)
-        
-        history_btn = QPushButton("История анализов")
-        history_btn.clicked.connect(lambda: self._switch_to_tab("История"))
-        data_layout.addWidget(history_btn)
-        
-        left_layout.addWidget(data_section)
-        
-        # Секция "Проект"
-        project_section = self._create_collapsible_section("Проект")
+        # Секция "PROJECT"
+        project_section = self._create_collapsible_section("PROJECT")
         project_layout = self._get_section_layout(project_section)
-        
-        overview_btn = QPushButton("Обзор проекта")
-        overview_btn.clicked.connect(lambda: self._switch_to_tab("Обзор"))
-        project_layout.addWidget(overview_btn)
-        
+
+        project_layout.addWidget(_nav_button(
+            "Обзор", lambda: self._switch_to_tab("Обзор")))
+        project_layout.addWidget(_nav_button("Файлы", self._focus_repo_files))
+
         left_layout.addWidget(project_section)
-        
-        # Секция "Система"
-        system_section = self._create_collapsible_section("Система")
+
+        # Секция "ANALYSIS"
+        analysis_section = self._create_collapsible_section("ANALYSIS")
+        analysis_layout = self._get_section_layout(analysis_section)
+
+        analysis_layout.addWidget(_nav_button(
+            "Метрики", lambda: self._switch_to_tab("Метрики")))
+        analysis_layout.addWidget(_nav_button(
+            "Граф", lambda: self._switch_to_tab("Граф")))
+        analysis_layout.addWidget(_nav_button(
+            "Анализ", lambda: self._switch_to_tab("Анализ")))
+        analysis_layout.addWidget(_nav_button(
+            "История", lambda: self._switch_to_tab("История")))
+
+        left_layout.addWidget(analysis_section)
+
+        # Секция "AI"
+        ai_section = self._create_collapsible_section("AI")
+        ai_layout = self._get_section_layout(ai_section)
+
+        ai_layout.addWidget(_nav_button(
+            "Чат", lambda: self._switch_to_tab("Чат")))
+        ai_layout.addWidget(_nav_button(
+            "Отчёты", lambda: self._switch_to_tab("Отчёты")))
+
+        left_layout.addWidget(ai_section)
+
+        # Секция "SYSTEM"
+        system_section = self._create_collapsible_section("SYSTEM")
         system_layout = self._get_section_layout(system_section)
-        
-        settings_btn = QPushButton("Быстрые настройки")
-        settings_btn.clicked.connect(lambda: self._switch_to_tab("Настройки"))
-        system_layout.addWidget(settings_btn)
-        
+
+        system_layout.addWidget(_nav_button(
+            "Настройки", lambda: self._switch_to_tab("Настройки")))
+        system_layout.addWidget(_nav_button(
+            "Резервные копии", lambda: self._switch_to_tab("Резервные копии")))
+
         gmod_btn = QPushButton("Использовать GMod")
         gmod_btn.clicked.connect(self._on_gmod_button)
         system_layout.addWidget(gmod_btn)
-        
+
         left_layout.addWidget(system_section)
-        
+
         left_layout.addStretch()
-        
+
         self.left_dock.setWidget(left_content)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.left_dock)
+
+    def _focus_repo_files(self) -> None:
+        """Фокус на файлах репозитория в правой шторке (навигация PROJECT)."""
+        try:
+            self.right_dock.show()
+            self.right_dock.raise_()
+            if hasattr(self, "repo_tabs"):
+                self.repo_tabs.setCurrentIndex(0)
+        except Exception as e:
+            logger.debug("focus files: %s", e)
     
     def _create_right_dock(self) -> None:
         """Создание правой шторки (prompt4 п.7)."""
@@ -2650,23 +2642,8 @@ class MainWindow(QMainWindow):
         card.setFrameStyle(QFrame.StyledPanel)
         card.setFixedWidth(300)
         card.setMinimumHeight(400)
-        
-        if active:
-            card.setStyleSheet("""
-                QFrame {
-                    border: 2px solid #4CAF50;
-                    border-radius: 8px;
-                    background: #f0fff0;
-                }
-            """)
-        else:
-            card.setStyleSheet("""
-                QFrame {
-                    border: 1px solid #ccc;
-                    border-radius: 8px;
-                    background: #fafafa;
-                }
-            """)
+        # Стили — из gmod.qss (ТЗ §23).
+        card.setObjectName("GModCardActive" if active else "GModCard")
         
         card_layout = QVBoxLayout(card)
         card_layout.setAlignment(Qt.AlignTop)
@@ -3148,33 +3125,24 @@ class MainWindow(QMainWindow):
         self._set_theme(theme)
     
     def _set_theme(self, theme: str) -> None:
-        """Установка темы."""
+        """Установка темы через ThemeManager (ТЗ §23: единый QSS).
+
+        Палитра — из resources/styles/gmod.qss (§24). Ручные палитры
+        удалены: они конфликтовали с QSS.
+        """
         self.db.save_workspace_state("theme", theme)
-        
-        # Базовая темная тема (временно заменили qdarktheme)
-        if theme == "dark":
+        try:
+            from gmod.ui.theme import ThemeManager
+            from PySide6.QtWidgets import QApplication
             app = QApplication.instance()
-            palette = app.palette()
-            palette.setColor(QPalette.Window, QColor(53, 53, 53))
-            palette.setColor(QPalette.WindowText, Qt.white)
-            palette.setColor(QPalette.Base, QColor(25, 25, 25))
-            palette.setColor(QPalette.AlternateBase, QColor(53, 53, 53))
-            palette.setColor(QPalette.ToolTipBase, Qt.white)
-            palette.setColor(QPalette.ToolTipText, Qt.white)
-            palette.setColor(QPalette.Text, Qt.white)
-            palette.setColor(QPalette.Button, QColor(53, 53, 53))
-            palette.setColor(QPalette.ButtonText, Qt.white)
-            palette.setColor(QPalette.BrightText, Qt.red)
-            palette.setColor(QPalette.Link, QColor(42, 130, 218))
-            palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
-            palette.setColor(QPalette.HighlightedText, Qt.black)
-            app.setPalette(palette)
-        elif theme == "light":
-            app = QApplication.instance()
-            app.setPalette(QApplication.style().standardPalette())
-        else:  # system
-            app = QApplication.instance()
-            app.setPalette(QApplication.style().standardPalette())
+            if app is not None:
+                ThemeManager.apply(app)
+        except Exception as e:
+            logger.debug("theme apply: %s", e)
+        try:
+            self.workspace_service.save_state(theme=theme)
+        except Exception:
+            pass
     
     def _switch_to_tab(self, tab_name: str) -> None:
         """Переключение на вкладку (пересоздаёт закрытую)."""
@@ -3182,12 +3150,133 @@ class MainWindow(QMainWindow):
         if tab_name == "Настройки":
             self._create_settings_tab()
             return
+        # Вкладка резервных копий (ТЗ §28 SYSTEM).
+        if tab_name == "Резервные копии":
+            self._create_backups_tab()
+            return
 
         index = self._ensure_tab(tab_name)
         if index >= 0:
             self.central_tabs.setCurrentIndex(index)
         else:
             self.status_bar.showMessage(f'Вкладка "{tab_name}" не найдена')
+
+    def _create_backups_tab(self) -> None:
+        """Вкладка «Резервные копии» (ТЗ §28 SYSTEM): список, создание, проверка."""
+        for i in range(self.central_tabs.count()):
+            if self.central_tabs.tabText(i) == "Резервные копии":
+                self.central_tabs.setCurrentIndex(i)
+                try:
+                    self._refresh_backups_list()
+                except Exception:
+                    pass
+                return
+
+        from PySide6.QtWidgets import (
+            QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+            QListWidget, QListWidgetItem, QTextEdit,
+        )
+        from PySide6.QtCore import Qt
+
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Резервные копии workspace"))
+        top.addStretch()
+        create_btn = QPushButton("Создать копию")
+        top.addWidget(create_btn)
+        open_folder_btn = QPushButton("Открыть папку")
+        top.addWidget(open_folder_btn)
+        refresh_btn = QPushButton("Обновить")
+        top.addWidget(refresh_btn)
+        layout.addLayout(top)
+
+        self.backups_list = QListWidget()
+        self.backups_list.setAlternatingRowColors(True)
+        self.backups_list.currentItemChanged.connect(self._on_backup_selected)
+        layout.addWidget(self.backups_list, 1)
+
+        self.backup_info = QTextEdit()
+        self.backup_info.setReadOnly(True)
+        self.backup_info.setMaximumHeight(150)
+        self.backup_info.setFont(QFont("Consolas", 9))
+        self.backup_info.setPlaceholderText("Выберите копию для просмотра manifest...")
+        layout.addWidget(self.backup_info)
+
+        create_btn.clicked.connect(self._on_create_backup)
+        open_folder_btn.clicked.connect(self._on_open_backups_folder)
+        refresh_btn.clicked.connect(self._refresh_backups_list)
+
+        self.central_tabs.addTab(tab, "Резервные копии")
+        self.central_tabs.setCurrentWidget(tab)
+        self._refresh_backups_list()
+
+    def _refresh_backups_list(self) -> None:
+        """Обновление списка резервных копий."""
+        from PySide6.QtWidgets import QListWidgetItem
+        from PySide6.QtCore import Qt
+        try:
+            from gmod.services.backup_service import BackupService
+            backups = BackupService(db=self.db).list_backups()
+            self.backups_list.clear()
+            self._backups_data = backups
+            for b in backups:
+                manifest = b.get("manifest") or {}
+                label = (f"{b['name']} | {manifest.get('created_at', '?')} | "
+                         f"{manifest.get('repository', '?')} | {b['size'] // 1024} KB")
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, b)
+                self.backups_list.addItem(item)
+            if not backups:
+                self.backups_list.addItem("Копий пока нет — нажмите «Создать копию»")
+        except Exception as e:
+            logger.error("backups refresh: %s", e)
+
+    def _on_backup_selected(self, current, _previous) -> None:
+        """Показ manifest выбранной копии."""
+        if not current:
+            return
+        import json
+        data = current.data(Qt.UserRole)
+        if not data or not isinstance(data, dict):
+            self.backup_info.clear()
+            return
+        manifest = data.get("manifest")
+        if isinstance(manifest, dict):
+            self.backup_info.setText(json.dumps(manifest, ensure_ascii=False, indent=2))
+        else:
+            self.backup_info.setText(f"Manifest не читается: {data.get('manifest_error', '?')}")
+
+    def _on_create_backup(self) -> None:
+        """Создание резервной копии вручную."""
+        from gmod.services.backup_service import BackupService
+        self.status_bar.showMessage("Создание резервной копии...")
+        QApplication.processEvents()
+        try:
+            self._persist_workspace()
+        except Exception:
+            pass
+        result = BackupService(db=self.db).create_backup(
+            "default", self._get_current_repo_id() or "")
+        if result.get("status") == "success":
+            self.status_bar.showMessage(f"Копия создана: {result.get('path', '')}")
+            self._refresh_backups_list()
+        else:
+            QMessageBox.critical(self, "Ошибка",
+                                 f"Не удалось создать копию: {result.get('message', '')}")
+
+    def _on_open_backups_folder(self) -> None:
+        """Открытие папки резервных копий."""
+        try:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            from gmod.services.backup_service import backups_dir
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(backups_dir())))
+        except Exception as e:
+            logger.error("open backups folder: %s", e)
 
     def _create_settings_tab(self) -> None:
         """Страница настроек: все секции plan1 п.6, сохранение в SQLite + config.yaml."""
@@ -3256,17 +3345,22 @@ class MainWindow(QMainWindow):
             scroll.setWidget(inner)
             return scroll
 
-        # ---------- 1. AI-провайдеры ----------
+        # ---------- 1. AI-провайдеры (ТЗ §5) ----------
         p1 = QWidget()
         p1_layout = QVBoxLayout(p1)
         W["prov"] = {}
-        for pname, title in (("ollama", "Ollama (локальный/облачный)"),
-                             ("groq", "Groq"), ("gemini", "Gemini")):
+        _titles = (("ollama", "Ollama (локальный/облачный)"),
+                   ("groq", "Groq"), ("gemini", "Gemini"),
+                   ("openai", "OpenAI"), ("anthropic", "Anthropic"))
+        _keys = {"ollama": settings.ollama_api_key, "groq": settings.groq_api_key,
+                 "gemini": settings.gemini_api_key, "openai": settings.openai_api_key,
+                 "anthropic": settings.anthropic_api_key}
+        for pname, title in _titles:
             group = QGroupBox(title)
             form = QFormLayout(group)
             enabled = QCheckBox("Включён")
             order = QSpinBox()
-            order.setRange(1, 3)
+            order.setRange(1, 6)
             order.setPrefix("Порядок fallback: ")
             form.addRow(enabled)
             form.addRow(order)
@@ -3285,7 +3379,7 @@ class MainWindow(QMainWindow):
                 form.addRow("URL сервера:", url_row)
                 entry["url"] = url
                 # API-ключ для Ollama Cloud (для локального сервера — пусто)
-                key = QLineEdit(settings.ollama_api_key)
+                key = QLineEdit(_keys["ollama"])
                 key.setEchoMode(QLineEdit.Password)
                 key.setPlaceholderText("API-ключ (для Ollama Cloud)")
                 form.addRow("API-ключ:", key)
@@ -3298,19 +3392,25 @@ class MainWindow(QMainWindow):
                 form.addRow("Модель:", model_combo)
                 entry["model_combo"] = model_combo
             else:
-                key = QLineEdit(
-                    settings.groq_api_key if pname == "groq" else settings.gemini_api_key
-                )
+                key = QLineEdit(_keys[pname])
                 key.setEchoMode(QLineEdit.Password)
                 key.setPlaceholderText("API-ключ")
                 form.addRow("API-ключ:", key)
                 entry["api_key"] = key
+            # Управление ключом: источник + показать/копировать/удалить (ТЗ §5).
+            form.addRow(self._make_credential_row(pname, entry["api_key"], tab))
             check_btn = QPushButton("Проверить соединение")
             check_btn.setProperty("provider", pname)
             check_btn.clicked.connect(
                 lambda _c, n=pname: self._check_provider_connection(n, tab)
             )
             form.addRow(check_btn)
+            test_btn = QPushButton("Тестовый inference")
+            test_btn.setToolTip("Явный тестовый запрос к модели (ТЗ §6, тратит токены)")
+            test_btn.clicked.connect(
+                lambda _c, n=pname: self._test_provider_inference(n, tab)
+            )
+            form.addRow(test_btn)
             W["prov"][pname] = entry
             p1_layout.addWidget(group)
         # Порядок из текущего конфига
@@ -3354,6 +3454,30 @@ class MainWindow(QMainWindow):
         gemini_refresh.clicked.connect(lambda _c: self._fetch_gemini_models_for_settings(tab))
         gemini_row.addWidget(gemini_refresh)
         p2_layout.addRow("Gemini (по умолчанию):", gemini_row)
+        # OpenAI: редактируемый список + кнопка обновления.
+        openai_row = QHBoxLayout()
+        W["openai_model"] = QComboBox()
+        W["openai_model"].setEditable(True)
+        W["openai_model"].addItems(["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"])
+        W["openai_model"].setCurrentText(settings.openai_model)
+        openai_row.addWidget(W["openai_model"], 1)
+        openai_refresh = QPushButton("🔄")
+        openai_refresh.setMaximumWidth(40)
+        openai_refresh.setToolTip("Обновить список моделей с OpenAI API")
+        openai_refresh.clicked.connect(lambda _c: self._fetch_openai_models_for_settings(tab))
+        openai_row.addWidget(openai_refresh)
+        p2_layout.addRow("OpenAI (по умолчанию):", openai_row)
+        # Anthropic: статический курируемый список (у API нет list endpoint).
+        anthropic_row = QHBoxLayout()
+        W["anthropic_model"] = QComboBox()
+        W["anthropic_model"].setEditable(True)
+        W["anthropic_model"].addItems(["claude-sonnet-4-20250514",
+                                       "claude-opus-4-20250514",
+                                       "claude-3-7-sonnet-20250219",
+                                       "claude-3-5-haiku-20241022"])
+        W["anthropic_model"].setCurrentText(settings.anthropic_model)
+        anthropic_row.addWidget(W["anthropic_model"], 1)
+        p2_layout.addRow("Anthropic (по умолчанию):", anthropic_row)
         W["behavior_model"] = QComboBox()
         W["behavior_model"].addItems(["archaeologist", "detective", "architect"])
         W["behavior_model"].setCurrentText(
@@ -3580,11 +3704,31 @@ class MainWindow(QMainWindow):
                     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                         data = yaml.safe_load(f) or {}
 
-                # Провайдеры в выбранном порядке fallback
+                # Провайдеры в выбранном порядке fallback.
+                # ТЗ §4: ключи храним ТОЛЬКО в OS Credential Store,
+                # в config.yaml пишем пустую строку.
+                from gmod.infrastructure.credentials.credential_service import (
+                    get_credential_service as _get_cs,
+                )
+                try:
+                    _cs = _get_cs()
+                except Exception:
+                    _cs = None
                 ordered = sorted(W["prov"].items(), key=lambda kv: kv[1]["order"].value())
                 providers = []
                 for pname, entry in ordered:
                     item = {"name": pname, "enabled": entry["enabled"].isChecked()}
+                    raw_key = entry["api_key"].text().strip()
+                    if _cs is not None:
+                        try:
+                            # Пустое поле = ключ удалён (ТЗ §5), иначе — в keyring.
+                            if raw_key:
+                                _cs.set_key(pname, raw_key)
+                            else:
+                                _cs.delete_key(pname)
+                        except Exception as e:
+                            logger.warning("credential save %s: %s", pname, e)
+                    item["api_key"] = ""
                     if pname == "ollama":
                         item["url"] = entry["url"].text().strip() or "http://localhost:11434"
                         model_combo = entry.get("model_combo")
@@ -3592,13 +3736,17 @@ class MainWindow(QMainWindow):
                             item["model"] = model_combo.currentText().strip() or "llama3.2:3b"
                         else:
                             item["model"] = W["ollama_model"].text().strip() or "llama3.2:3b"
-                        item["api_key"] = entry["api_key"].text().strip()
                     elif pname == "groq":
-                        item["api_key"] = entry["api_key"].text().strip()
                         item["model"] = W["groq_model"].currentText().strip() or "openai/gpt-oss-20b"
-                    else:
-                        item["api_key"] = entry["api_key"].text().strip()
+                    elif pname == "gemini":
                         item["model"] = W["gemini_model"].currentText().strip() or "gemini-2.5-flash"
+                    elif pname == "openai":
+                        item["url"] = "https://api.openai.com/v1"
+                        item["model"] = W["openai_model"].currentText().strip() or "gpt-4o-mini"
+                    elif pname == "anthropic":
+                        item["model"] = W["anthropic_model"].currentText().strip() or "claude-sonnet-4-20250514"
+                    else:
+                        item["model"] = ""
                     providers.append(item)
                     _save_to_sqlite("llm_provider", pname + ".enabled", item["enabled"])
                 data.setdefault("llm", {})["providers"] = providers
@@ -3688,6 +3836,75 @@ class MainWindow(QMainWindow):
 
         self.central_tabs.addTab(tab, "Настройки")
         self.central_tabs.setCurrentWidget(tab)
+
+    def _make_credential_row(self, account: str, key_edit, parent_tab):
+        """Строка управления ключом: источник + показать/копировать/удалить (ТЗ §5)."""
+        from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QMessageBox
+
+        row = QHBoxLayout()
+        try:
+            from gmod.config.settings import get_settings
+            source = get_settings().key_source(account)
+        except Exception:
+            source = "?"
+        source_label = QLabel(f"Источник: {source}")
+        source_label.setStyleSheet("color: gray; font-size: 11px;")
+        row.addWidget(source_label)
+
+        show_btn = QPushButton("Показать")
+        show_btn.setCheckable(True)
+        show_btn.setMaximumWidth(90)
+        show_btn.toggled.connect(
+            lambda on: key_edit.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
+        show_btn.toggled.connect(
+            lambda on: show_btn.setText("Скрыть" if on else "Показать"))
+        row.addWidget(show_btn)
+
+        copy_btn = QPushButton("Копировать")
+        copy_btn.setMaximumWidth(90)
+        copy_btn.clicked.connect(
+            lambda: QApplication.clipboard().setText(key_edit.text()))
+        row.addWidget(copy_btn)
+
+        del_btn = QPushButton("Удалить")
+        del_btn.setMaximumWidth(90)
+        del_btn.clicked.connect(
+            lambda: self._delete_credential(account, key_edit, parent_tab))
+        row.addWidget(del_btn)
+        row.addStretch()
+        return row
+
+    def _delete_credential(self, account: str, key_edit, parent_tab) -> None:
+        """Удаление ключа из keyring с подтверждением (ТЗ §5)."""
+        reply = QMessageBox.question(
+            parent_tab, "Удаление ключа",
+            f"Удалить API-ключ провайдера {account} из защищённого хранилища?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            from gmod.infrastructure.credentials.credential_service import (
+                get_credential_service,
+            )
+            get_credential_service().delete_key(account)
+        except Exception as e:
+            logger.warning("credential delete: %s", e)
+        key_edit.clear()
+        self.status_bar.showMessage(f"Ключ {account} удалён (не забудьте Сохранить)")
+        logger.info("credential %s удалён пользователем", account)
+
+    def _test_provider_inference(self, provider_name: str, parent) -> None:
+        """Явный тестовый inference (ТЗ §6: отдельная операция, тратит токены)."""
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            from gmod.services.llm_service import LLMService
+            answer = LLMService().test_inference(provider_name)
+            QMessageBox.information(parent, "Тестовый inference",
+                                    f"{provider_name} OK, ответ модели:\n{answer[:600]}")
+        except Exception as e:
+            from gmod.infrastructure.llm.health import classify_exception
+            _reason, msg = classify_exception(e)
+            QMessageBox.warning(parent, "Тестовый inference", f"{msg}\n{e}"[:700])
 
     def _check_provider_connection(self, provider_name: str, parent) -> None:
         """Проверка соединения БЕЗ generation prompt + тестовый inference.
@@ -3821,6 +4038,41 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(parent_tab, "Модели не найдены", "Groq вернул пустой список.")
                 return
             self._fill_settings_combo("groq_model", names, parent_tab)
+        except Exception as e:
+            QMessageBox.warning(parent_tab, "Ошибка", f"{type(e).__name__}: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _fetch_openai_models_for_settings(self, parent_tab) -> None:
+        """Список моделей OpenAI через provider.list_models (ключ из поля)."""
+        from PySide6.QtWidgets import QMessageBox, QApplication
+        from gmod.infrastructure.llm.factory import build_provider
+
+        entry = self._settings_W.get("prov", {}).get("openai", {})
+        key_widget = entry.get("api_key")
+        key = key_widget.text().strip() if key_widget else ""
+        if not key:
+            QMessageBox.warning(parent_tab, "Нужен ключ", "Введите OpenAI API-ключ в разделе AI-провайдеры.")
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            provider = build_provider("openai", {"name": "openai", "enabled": True,
+                                                 "api_key": key, "model": ""})
+            if provider is None:
+                return
+            try:
+                names = provider.list_models()
+                # Только чат-модели.
+                names = [n for n in names if "gpt" in n or "o1" in n or "o3" in n or "o4" in n]
+            except Exception as e:
+                from gmod.infrastructure.llm.health import classify_exception
+                _reason, msg = classify_exception(e)
+                QMessageBox.warning(parent_tab, "Ошибка", msg)
+                return
+            if not names:
+                QMessageBox.warning(parent_tab, "Модели не найдены", "OpenAI вернул пустой список.")
+                return
+            self._fill_settings_combo("openai_model", names, parent_tab)
         except Exception as e:
             QMessageBox.warning(parent_tab, "Ошибка", f"{type(e).__name__}: {e}")
         finally:

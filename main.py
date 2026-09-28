@@ -35,7 +35,12 @@ def main():
     app.setApplicationName("GMod")
     app.setApplicationVersion("1.0.0")
     app.setOrganizationName("GMod Team")
-    
+
+    # Единая дизайн-система (ТЗ §23): ThemeManager + gmod.qss.
+    # Индивидуальная тема _set_theme() поверх QSS больше не применяется.
+    from gmod.ui.theme import ThemeManager
+    ThemeManager.apply(app)
+
     # Включение high-DPI scaling (современный подход)
     # В PySide6 high-DPI включен по умолчанию, но для совместимости оставим
     

@@ -1,0 +1,194 @@
+/* GMod design system (ТЗ §23-24). Единый QSS вместо локальных setStyleSheet.
+   Палитра: фоны #0B1630/#0F1E3F/#213A56/#182B45/#29445F/#46586B;
+   акценты #CDAA80/#997953/#DFC09A;
+   текст #D8D4CB/#C0C0C0/#A9A9A9/#949090/#8B8686. */
+
+QMainWindow, QWidget {
+    background: #0F1E3F;
+    color: #D8D4CB;
+    font-size: 10pt;
+}
+
+QDockWidget {
+    background: #0B1630;
+    color: #D8D4CB;
+    titlebar-close-icon: none;
+}
+QDockWidget::title {
+    background: #182B45;
+    padding: 4px 8px;
+    color: #DFC09A;
+}
+
+QTabWidget::pane {
+    border: 1px solid #29445F;
+    background: #0F1E3F;
+}
+QTabBar::tab {
+    background: #182B45;
+    color: #A9A9A9;
+    padding: 6px 12px;
+    border: 1px solid #29445F;
+    border-bottom: none;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+}
+QTabBar::tab:selected {
+    background: #213A56;
+    color: #DFC09A;
+}
+QTabBar::tab:hover {
+    background: #29445F;
+}
+
+QPushButton {
+    background: #213A56;
+    color: #D8D4CB;
+    border: 1px solid #46586B;
+    border-radius: 4px;
+    padding: 5px 12px;
+}
+QPushButton:hover {
+    background: #29445F;
+    border-color: #CDAA80;
+}
+QPushButton:pressed {
+    background: #182B45;
+}
+QPushButton:disabled {
+    background: #182B45;
+    color: #8B8686;
+}
+
+/* Верхняя панель */
+QWidget#GModTopBar {
+    background: #0B1630;
+    border-bottom: 1px solid #29445F;
+}
+QWidget#GModTopBar QPushButton {
+    background: transparent;
+    border: none;
+    color: #C0C0C0;
+    font-size: 16px;
+    padding: 4px 8px;
+    border-radius: 3px;
+}
+QWidget#GModTopBar QPushButton:hover {
+    background: #29445F;
+}
+QLabel#GModTitle {
+    color: #DFC09A;
+    font-weight: bold;
+    font-size: 13px;
+}
+
+/* Карточки режимов и сообщений чата */
+QFrame#GModCard {
+    border: 1px solid #46586B;
+    border-radius: 8px;
+    background: #182B45;
+}
+QFrame#GModCardActive {
+    border: 2px solid #CDAA80;
+    border-radius: 8px;
+    background: #0F1E3F;
+}
+QFrame#GModChatUser {
+    border: 1px solid #997953;
+    border-radius: 8px;
+    background: #213A56;
+}
+QFrame#GModChatAi {
+    border: 1px solid #46586B;
+    border-radius: 8px;
+    background: #182B45;
+}
+
+QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+    background: #0B1630;
+    color: #D8D4CB;
+    border: 1px solid #29445F;
+    border-radius: 4px;
+    padding: 4px;
+    selection-background-color: #997953;
+}
+QLineEdit:focus, QTextEdit:focus, QComboBox:focus {
+    border-color: #CDAA80;
+}
+
+QGroupBox {
+    border: 1px solid #29445F;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding-top: 8px;
+    color: #DFC09A;
+    font-weight: bold;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 8px;
+}
+
+QStatusBar {
+    background: #0B1630;
+    color: #A9A9A9;
+}
+QStatusBar::item {
+    border: none;
+}
+
+QMenuBar {
+    background: #0B1630;
+    color: #D8D4CB;
+}
+QMenuBar::item:selected {
+    background: #29445F;
+}
+QMenu {
+    background: #182B45;
+    color: #D8D4CB;
+    border: 1px solid #29445F;
+}
+QMenu::item:selected {
+    background: #29445F;
+    color: #DFC09A;
+}
+
+QTableView, QTreeView, QListWidget {
+    background: #0B1630;
+    color: #D8D4CB;
+    alternate-background-color: #0F1E3F;
+    border: 1px solid #29445F;
+    gridline-color: #213A56;
+}
+QHeaderView::section {
+    background: #182B45;
+    color: #DFC09A;
+    border: 1px solid #29445F;
+    padding: 4px;
+}
+
+QCheckBox, QRadioButton {
+    color: #D8D4CB;
+    spacing: 6px;
+}
+QToolTip {
+    background: #213A56;
+    color: #D8D4CB;
+    border: 1px solid #CDAA80;
+}
+QScrollBar:vertical, QScrollBar:horizontal {
+    background: #0B1630;
+    border: none;
+}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+    background: #29445F;
+    border-radius: 4px;
+    min-height: 20px;
+}
+QScrollBar::handle:hover {
+    background: #46586B;
+}
+QSplitter::handle {
+    background: #29445F;
+}
