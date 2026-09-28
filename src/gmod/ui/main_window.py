@@ -92,6 +92,65 @@ class MainWindow(QMainWindow):
                            "model": self.model_combo.currentText()})
             except Exception:
                 pass
+            # ТЗ §5: ветка, фильтры, выборы, чат-сессия, НН-конфигурация.
+            try:
+                branch = ""
+                if hasattr(self, "branches_combo"):
+                    branch = self.branches_combo.currentText()
+                self.workspace_service.save_view("branch", state={"branch": branch})
+            except Exception:
+                pass
+            try:
+                self.workspace_service.save_view(
+                    "metrics_filters",
+                    state={"file": self.metrics_file_filter.currentText(),
+                           "type": self.metrics_type_filter.currentText(),
+                           "metric": self.metrics_name_filter.currentText(),
+                           "search": self.metrics_search.text()})
+            except Exception:
+                pass
+            try:
+                paths = [self.func_paths_list.item(i).text()
+                         for i in range(self.func_paths_list.count())] \
+                    if hasattr(self, "func_paths_list") else []
+                self.workspace_service.save_view("selected_files", state={"paths": paths})
+            except Exception:
+                pass
+            try:
+                head_commit = ""
+                repo_path = self._get_repo_path(repo_id)
+                if repo_path:
+                    import git as _git
+                    head_commit = _git.Repo(repo_path).head.commit.hexsha
+                self.workspace_service.save_view(
+                    "selected_commits", state={"head": head_commit})
+            except Exception:
+                pass
+            try:
+                self.workspace_service.save_view(
+                    "chat_session", state={"session_id": getattr(
+                        self, "_chat_session_id", "") or ""})
+            except Exception:
+                pass
+            try:
+                nn_state = {"epochs": self.param_epochs.value(),
+                            "lr": self.param_val_lr.value()} \
+                    if hasattr(self, "param_epochs") else {}
+                try:
+                    from gmod.infrastructure.llm.validator import default_model_path
+                    nn_state["validator_model"] = str(default_model_path())
+                except Exception:
+                    pass
+                try:
+                    from gmod.ml.model_storage import ModelStorage
+                    nn_state["ml_models"] = [
+                        m.get("model_id", "") for m in
+                        ModelStorage().list_models(limit=50)]
+                except Exception:
+                    pass
+                self.workspace_service.save_view("neural_network", state=nn_state)
+            except Exception:
+                pass
         except Exception as e:
             logger.debug("persist workspace: %s", e)
 
@@ -5338,7 +5397,52 @@ class MainWindow(QMainWindow):
             self.left_dock.setVisible(True)
             self.right_dock.setVisible(True)
             self._set_theme("dark")
+            # ТЗ §6: reset tabs/filters/selections/settings.
+            try:
+                for i in range(self.central_tabs.count() - 1, -1, -1):
+                    if self.central_tabs.tabText(i) != "Чат":
+                        self.central_tabs.removeTab(i)
+                self._ensure_tab("Чат")
+                self.central_tabs.setCurrentIndex(0)
+            except Exception:
+                pass
+            try:
+                self.metrics_file_filter.setCurrentIndex(0)
+                self.metrics_type_filter.setCurrentText("Все")
+                self.metrics_name_filter.setCurrentIndex(0)
+                self.metrics_search.clear()
+            except Exception:
+                pass
+            try:
+                self.func_paths_list.clear()
+            except Exception:
+                pass
+            try:
+                self._compare_checked = set()
+                self._update_compare_button()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "repo_tabs"):
+                    self.repo_tabs.setCurrentIndex(0)
+            except Exception:
+                pass
             self._save_tabs_state()
+            # Reload repository + workspace views.
+            try:
+                repo_id = self._get_current_repo_id()
+                repo_path = self._get_repo_path(repo_id) if repo_id else None
+                if repo_id and repo_path:
+                    from pathlib import Path as _Path
+                    from gmod.domain.entities import Repository as _Repo
+                    from gmod.infrastructure.git.git_parser import GitParser as _GP
+                    _repo = _GP().open_repository(_Path(repo_path))
+                    self._populate_repo_dock(_repo)
+                    self._refresh_metrics()
+                    self._refresh_graph()
+                    self._refresh_reports()
+            except Exception as e:
+                logger.debug("reset reload: %s", e)
             self.status_bar.showMessage(
                 f"Рабочая область сброшена. Backup: {result.get('backup', '')}")
             QMessageBox.information(
