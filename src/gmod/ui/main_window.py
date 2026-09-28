@@ -1920,26 +1920,39 @@ class MainWindow(QMainWindow):
         
         left_layout.addLayout(header_layout)
         
-        # Список отчётов
+        # Список отчётов: клик — открыть; Ctrl+Click — добавить;
+        # Shift+Click — диапазон; ☐ — выбор без Ctrl (ТЗ §3.1).
         self.reports_list = QListWidget()
         self.reports_list.setAlternatingRowColors(True)
+        self.reports_list.setSelectionMode(QListWidget.ExtendedSelection)
         self.reports_list.currentItemChanged.connect(self._on_report_selected)
+        self.reports_list.itemChanged.connect(lambda _i: self._update_compare_button())
+        self.reports_list.itemSelectionChanged.connect(self._update_compare_button)
         left_layout.addWidget(self.reports_list, 1)
-        
+
+        self._compare_checked: set = set()
+        hint_label = QLabel("Клик — открыть • Ctrl+Click — добавить • "
+                            "Shift+Click — диапазон • ☐ — для сравнения")
+        hint_label.setStyleSheet("color: gray; font-size: 11px;")
+        hint_label.setWordWrap(True)
+        left_layout.addWidget(hint_label)
+
         # Кнопки действий
         actions_layout = QHBoxLayout()
-        
+
         export_btn = QPushButton("Экспорт")
         export_btn.clicked.connect(self._export_report)
         actions_layout.addWidget(export_btn)
-        
+
         delete_btn = QPushButton("Удалить")
         delete_btn.clicked.connect(self._delete_report)
         actions_layout.addWidget(delete_btn)
-        
-        compare_btn = QPushButton("Сравнить")
-        compare_btn.clicked.connect(self._compare_reports)
-        actions_layout.addWidget(compare_btn)
+
+        self.compare_btn = QPushButton("Сравнить")
+        self.compare_btn.clicked.connect(self._compare_reports)
+        self.compare_btn.setEnabled(False)
+        self.compare_btn.setToolTip("Активна при выбранных ровно 2 отчётах (ТЗ §3.2)")
+        actions_layout.addWidget(self.compare_btn)
         
         left_layout.addLayout(actions_layout)
 
@@ -2012,20 +2025,24 @@ class MainWindow(QMainWindow):
             
             self.reports_list.clear()
             self._reports_data = reports
-            
+
             for report in reports:
                 agent_type = report.get('agent_type', 'unknown')
                 commit = report.get('commit_hash', '')[:8]
                 risk = report.get('risk_score', 0)
                 timestamp = report.get('timestamp', '')
-                
-                item_text = f"[{agent_type}] {commit} | Risk: {risk}/10 | {timestamp}"
+
+                item_text = f"☐ [{agent_type}] {commit} | Risk: {risk}/10 | {timestamp}"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, report)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if report.get('id') in self._compare_checked
+                                   else Qt.Unchecked)
                 self.reports_list.addItem(item)
-            
+
             if not reports:
                 self.reports_list.addItem("Отчётов не найдено")
+            self._update_compare_button()
             try:
                 acc = self.db.feedback_accuracy(repo_id)
                 if hasattr(self, "reports_accuracy_label"):
@@ -2168,50 +2185,89 @@ class MainWindow(QMainWindow):
                 logger.error(f"Error deleting report: {e}")
                 QMessageBox.critical(self, "Ошибка", f"Не удалось удалить: {e}")
     
+    def _compare_selection(self) -> list:
+        """Выбранные для сравнения: сначала ☐, иначе выделение (Ctrl/Shift)."""
+        checked = []
+        for i in range(self.reports_list.count()):
+            item = self.reports_list.item(i)
+            try:
+                if item.checkState() == Qt.Checked:
+                    report = item.data(Qt.UserRole)
+                    if isinstance(report, dict) and report.get("id"):
+                        checked.append(report)
+            except Exception:
+                pass
+        if checked:
+            return checked
+        selected = []
+        for item in self.reports_list.selectedItems():
+            report = item.data(Qt.UserRole)
+            if isinstance(report, dict) and report.get("id"):
+                selected.append(report)
+        return selected
+
+    def _update_compare_button(self) -> None:
+        """Синхронизация ☐ и активности кнопки «Сравнить» (ровно 2, ТЗ §3.2)."""
+        try:
+            chosen = self._compare_selection()
+            self._compare_checked = {r.get("id") for r in chosen}
+            if hasattr(self, "compare_btn"):
+                self.compare_btn.setEnabled(len(chosen) == 2)
+        except Exception:
+            pass
+
     def _compare_reports(self) -> None:
-        """Сравнение двух отчётов."""
-        selected = self.reports_list.selectedItems()
-        if len(selected) != 2:
-            QMessageBox.warning(self, "Предупреждение", "Выберите ровно 2 отчёта для сравнения (Ctrl+клик)")
+        """Сравнение двух отчётов: таблица + AI-diff (ТЗ §3.3)."""
+        from gmod.services.report_comparison import validate_selection, compare
+
+        chosen = self._compare_selection()
+        ok, message = validate_selection(chosen)
+        if not ok:
+            QMessageBox.warning(self, "Сравнение", message)
             return
-        
-        report1 = selected[0].data(Qt.UserRole)
-        report2 = selected[1].data(Qt.UserRole)
-        
-        if not report1 or not report2:
-            return
-        
-        # Создаём диалог сравнения
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QLabel
-        
+
+        result = compare(chosen[0], chosen[1])
+
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                                       QTableWidget, QTableWidgetItem, QTextEdit,
+                                       QAbstractItemView)
         dialog = QDialog(self)
         dialog.setWindowTitle("Сравнение отчётов")
-        dialog.resize(1000, 600)
-        
+        dialog.resize(1100, 650)
         layout = QVBoxLayout(dialog)
-        
-        layout.addWidget(QLabel(f"Отчёт 1: #{report1.get('id')} | {report1.get('agent_type')} | Risk: {report1.get('risk_score')}"))
-        view1 = QTextEdit()
-        view1.setReadOnly(True)
-        view1.setFont(QFont("Consolas", 9))
-        try:
-            data1 = json.loads(report1.get('response_json', '{}'))
-            view1.setText(json.dumps(data1, ensure_ascii=False, indent=2))
-        except:
-            view1.setText(report1.get('response_json', ''))
-        layout.addWidget(view1)
-        
-        layout.addWidget(QLabel(f"Отчёт 2: #{report2.get('id')} | {report2.get('agent_type')} | Risk: {report2.get('risk_score')}"))
-        view2 = QTextEdit()
-        view2.setReadOnly(True)
-        view2.setFont(QFont("Consolas", 9))
-        try:
-            data2 = json.loads(report2.get('response_json', '{}'))
-            view2.setText(json.dumps(data2, ensure_ascii=False, indent=2))
-        except:
-            view2.setText(report2.get('response_json', ''))
-        layout.addWidget(view2)
-        
+        layout.setSpacing(8)
+
+        meta = result["meta_a"]
+        meta_b = result["meta_b"]
+        layout.addWidget(QLabel(
+            f"Отчёт A: #{meta['id']} | {meta['agent']} | коммит {meta['commit']} | "
+            f"риск {meta['risk']}"))
+        layout.addWidget(QLabel(
+            f"Отчёт B: #{meta_b['id']} | {meta_b['agent']} | коммит {meta_b['commit']} | "
+            f"риск {meta_b['risk']}"))
+
+        table = QTableWidget(len(result["rows"]), 3)
+        table.setHorizontalHeaderLabels(["Поле", "Отчёт A", "Отчёт B"])
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        for row_idx, row in enumerate(result["rows"]):
+            for col_idx, key in (("field", 0), ("a", 1), ("b", 2)):
+                cell = QTableWidgetItem(row[key])
+                if row["changed"] and col_idx > 0:
+                    cell.setBackground(QColor("#4a3a1a"))
+                table.setItem(row_idx, col_idx, cell)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setMaximumHeight(280)
+        layout.addWidget(table)
+
+        layout.addWidget(QLabel("Изменения AI-анализа (diff):"))
+        diff_view = QTextEdit()
+        diff_view.setReadOnly(True)
+        diff_view.setFont(QFont("Consolas", 9))
+        diff_view.setText(result["ai_diff"])
+        layout.addWidget(diff_view, 1)
+
         dialog.exec()
 
     def _create_history_tab(self) -> QWidget:
