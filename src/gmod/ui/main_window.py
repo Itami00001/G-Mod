@@ -1098,16 +1098,46 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Не удалось экспортировать JSON: {e}")
     
     def _create_chat_tab(self) -> QWidget:
-        """Создание вкладки чата."""
+        """Создание вкладки чата (карточки сообщений, ТЗ §26)."""
         from PySide6.QtWidgets import QTextEdit, QComboBox, QScrollArea
-        
+
         chat_tab = QWidget()
         chat_layout = QVBoxLayout(chat_tab)
-        
-        # Область истории диалога — восстанавливается из SQLite (ТЗ §9).
-        self.chat_history = QTextEdit()
-        self.chat_history.setReadOnly(True)
-        self.chat_history.setPlaceholderText("История диалога появится здесь...")
+        chat_layout.setSpacing(6)
+        chat_layout.setContentsMargins(6, 6, 6, 6)
+
+        # Верхняя строка: сессии (ТЗ §26: название, предыдущие диалоги, новый).
+        session_row = QHBoxLayout()
+        session_row.setSpacing(6)
+        session_row.addWidget(QLabel("Диалог:"))
+        self.chat_session_combo = QComboBox()
+        self.chat_session_combo.setMinimumWidth(220)
+        self.chat_session_combo.currentIndexChanged.connect(self._on_chat_session_changed)
+        session_row.addWidget(self.chat_session_combo, 1)
+        new_chat_btn = QPushButton("＋ Новый")
+        new_chat_btn.setMaximumWidth(100)
+        new_chat_btn.clicked.connect(self._on_new_chat_session)
+        session_row.addWidget(new_chat_btn)
+        clear_chat_btn = QPushButton("Очистить")
+        clear_chat_btn.setMaximumWidth(100)
+        clear_chat_btn.setToolTip("Очистить только текущий диалог (ТЗ §26)")
+        clear_chat_btn.clicked.connect(self._on_clear_chat_session)
+        session_row.addWidget(clear_chat_btn)
+        chat_layout.addLayout(session_row)
+
+        # Область карточек сообщений (история из SQLite, ТЗ §9).
+        self.chat_scroll = QScrollArea()
+        self.chat_scroll.setWidgetResizable(True)
+        self.chat_cards_host = QWidget()
+        self.chat_cards_layout = QVBoxLayout(self.chat_cards_host)
+        self.chat_cards_layout.setSpacing(8)
+        self.chat_cards_layout.setContentsMargins(4, 4, 4, 4)
+        self.chat_cards_layout.setAlignment(Qt.AlignTop)
+        self.chat_scroll.setWidget(self.chat_cards_host)
+        chat_layout.addWidget(self.chat_scroll, 1)
+
+        # Совместимость: chat_history больше не QTextEdit (см. _render_chat_cards).
+        self.chat_history = None
         self._chat_session_id = None
         try:
             from gmod.services.chat_service import ChatService
@@ -1118,7 +1148,6 @@ class MainWindow(QMainWindow):
             self._chat_session_id = _sess["id"]
         except Exception as e:
             logger.debug("chat restore: %s", e)
-        chat_layout.addWidget(self.chat_history, 1)
         
         # Поле ввода сообщения
         self.chat_input = QTextEdit()
@@ -1195,11 +1224,13 @@ class MainWindow(QMainWindow):
             
             # Если нет включенных провайдеров, добавляем все как заглушку
             if self.provider_combo.count() == 0:
-                self.provider_combo.addItems(["Ollama", "Groq", "Gemini"])
+                self.provider_combo.addItems(["Ollama", "Groq", "Gemini", "Openai", "Anthropic"])
                 self.provider_model_map = {
                     "Ollama": "llama3.2:3b",
                     "Groq": "openai/gpt-oss-20b",
-                    "Gemini": "gemini-2.5-flash"
+                    "Gemini": "gemini-2.5-flash",
+                    "Openai": "gpt-4o-mini",
+                    "Anthropic": "claude-sonnet-4-20250514"
                 }
             
             # Подключаем сигнал смены провайдера
@@ -1210,11 +1241,13 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logger.error(f"Error loading LLM settings: {e}")
-            self.provider_combo.addItems(["Ollama", "Groq", "Gemini"])
+            self.provider_combo.addItems(["Ollama", "Groq", "Gemini", "Openai", "Anthropic"])
             self.provider_model_map = {
                 "Ollama": "llama3.2:3b",
                 "Groq": "openai/gpt-oss-20b",
-                "Gemini": "gemini-2.5-flash"
+                "Gemini": "gemini-2.5-flash",
+                "Openai": "gpt-4o-mini",
+                "Anthropic": "claude-sonnet-4-20250514"
             }
     
     def _on_provider_changed(self, provider_name: str) -> None:
@@ -1242,6 +1275,14 @@ class MainWindow(QMainWindow):
             candidates += ["gemini-2.5-flash", "gemini-2.5-flash-lite",
                            "gemini-2.5-pro", "gemini-3.5-flash"]
             QTimer.singleShot(0, self._fetch_gemini_models_for_chat)
+        elif provider_name == "Openai":
+            candidates += ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"]
+            QTimer.singleShot(0, self._fetch_openai_models_for_chat)
+        elif provider_name == "Anthropic":
+            # У API Anthropic нет list endpoint — курируемый список.
+            candidates += ["claude-sonnet-4-20250514",
+                           "claude-opus-4-20250514",
+                           "claude-3-7-sonnet-20250219"]
         for m in candidates:
             if m and m not in seen:
                 self.model_combo.addItem(m)
@@ -1256,6 +1297,21 @@ class MainWindow(QMainWindow):
             pass
         if hasattr(self, "llm_status_label"):
             QTimer.singleShot(0, self._on_check_llm_status)
+
+    def _fetch_openai_models_for_chat(self) -> None:
+        """Модели OpenAI для чата через provider.list_models (ТЗ §3.2)."""
+        try:
+            from gmod.infrastructure.llm.factory import (
+                build_provider, provider_entry_from_settings,
+            )
+            provider = build_provider("openai", provider_entry_from_settings("openai"))
+            if provider is None:
+                return
+            names = [n for n in provider.list_models()
+                     if "gpt" in n or "o1" in n or "o3" in n or "o4" in n]
+            self._fill_chat_models("openai", names)
+        except Exception as e:
+            logger.debug("OpenAI models fetch failed: %s", e)
 
     def _fill_chat_models(self, provider_id: str, model_names: list) -> None:
         """Заполнить комбобокс моделей чата (только если провайдер не сменился)."""
@@ -4339,24 +4395,25 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Ошибка переключения ветки: {e}")
     
     def _on_send_message(self) -> None:
-        """Обработка отправки сообщения через usecase (prompt4 п.1)."""
-        if not hasattr(self, 'chat_input') or not hasattr(self, 'chat_history'):
+        """Обработка отправки сообщения (ТЗ §8)."""
+        if not hasattr(self, 'chat_input'):
             return
-            
+
         text = self.chat_input.toPlainText().strip()
         if not text:
             return
-        
-        # Добавляем сообщение пользователя в историю
-        self.chat_history.append(f"\nВы: {text}")
+
+        # Оптимистичная карточка вопроса (ответ дорисуется по готовности).
+        self._add_message_card("user", text, "только что",
+                               self._current_provider_label())
         self.chat_input.clear()
-        
+
         # Показываем индикатор загрузки
         self.send_button.setEnabled(False)
         self.send_button.setText("Ожидание...")
         self.status_bar.showMessage("Отправка сообщения...")
-        
-        # Запускаем асинхронную отправку через usecase
+
+        # Запускаем асинхронную отправку через ChatService
         QTimer.singleShot(0, lambda: self._send_message_async(text))
     
     def _send_message_async(self, text: str) -> None:
@@ -4443,7 +4500,7 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             logger.error(f"Error sending message: {e}")
-            self.chat_history.append(f"\nAI: Ошибка: {str(e)}")
+            self._add_message_card("assistant", f"Ошибка: {e}", "ошибка", "")
             self.send_button.setEnabled(True)
             self.send_button.setText("Отправить")
             self.status_bar.showMessage("Готово")
@@ -4489,49 +4546,280 @@ class MainWindow(QMainWindow):
             logger.debug("repo context: %s", e)
             return f"Репозиторий: {repo_id}"
 
-    def _render_chat_session(self, session_id: str) -> None:
-        """Отрисовка истории сессии из SQLite (ТЗ §9: восстановление)."""
+    # ============ Чат-карточки (ТЗ §26) ============
+
+    def _current_provider_label(self) -> str:
+        """Текущие провайдер/модель для мета-строки карточки."""
+        try:
+            return f"{self.provider_combo.currentText()} · {self.model_combo.currentText()}"
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _format_chat_time(value) -> str:
+        """HH:MM из timestamp SQLite."""
+        try:
+            text = str(value or "")
+            return text[11:16] if len(text) >= 16 else text
+        except Exception:
+            return ""
+
+    def _clear_chat_cards(self) -> None:
+        """Удаление всех карточек."""
+        layout = self.chat_cards_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _add_message_card(self, role: str, content: str, meta: str = "",
+                          provider_label: str = "", message_id: int = 0,
+                          can_regenerate: bool = False) -> None:
+        """Одна карточка сообщения (ТЗ §26)."""
+        from PySide6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        from PySide6.QtCore import Qt
+
+        is_user = role == "user"
+        card = QFrame()
+        card.setObjectName("GModChatUser" if is_user else "GModChatAi")
+        card_layout = QVBoxLayout(card)
+        card_layout.setSpacing(4)
+        card_layout.setContentsMargins(10, 8, 10, 8)
+
+        title = "USER" if is_user else "AI"
+        header_parts = [title]
+        if meta:
+            header_parts.append(str(meta))
+        if provider_label:
+            header_parts.append(str(provider_label))
+        header = QLabel(" · ".join(header_parts))
+        header.setStyleSheet("color: #8B8686; font-size: 11px;")
+        card_layout.addWidget(header)
+
+        body = QLabel(content or "(пусто)")
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        card_layout.addWidget(body)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        copy_btn = QPushButton("Копировать")
+        copy_btn.setMaximumWidth(110)
+        copy_btn.clicked.connect(
+            lambda: QApplication.clipboard().setText(content or ""))
+        buttons.addWidget(copy_btn)
+        if message_id:
+            del_btn = QPushButton("Удалить")
+            del_btn.setMaximumWidth(90)
+            del_btn.clicked.connect(
+                lambda _c=False, mid=message_id: self._on_delete_chat_message(mid))
+            buttons.addWidget(del_btn)
+        if can_regenerate:
+            regen_btn = QPushButton("↻ Повторить")
+            regen_btn.setMaximumWidth(110)
+            regen_btn.setToolTip("Повторная генерация ответа (ТЗ §26)")
+            regen_btn.clicked.connect(self._on_regenerate_chat_message)
+            buttons.addWidget(regen_btn)
+        buttons.addStretch()
+        card_layout.addLayout(buttons)
+
+        self.chat_cards_layout.addWidget(card)
+        try:
+            bar = self.chat_scroll.verticalScrollBar()
+            bar.setValue(bar.maximum())
+        except Exception:
+            pass
+
+    def _render_chat_cards(self, session_id: str) -> None:
+        """Полная отрисовка сессии карточками из SQLite (ТЗ §9)."""
         try:
             from gmod.services.chat_service import ChatService
             service = ChatService(db=self.db)
-            self.chat_history.clear()
+            self._clear_chat_cards()
             messages = service.get_messages(session_id)
             if not messages:
-                self.chat_history.append("AI: Привет! Загрузи репозиторий, чтобы начать.")
+                self._add_message_card(
+                    "assistant", "Привет! Загрузи репозиторий, чтобы начать.", "")
                 return
+            last_ai_id = 0
             for m in messages:
-                role = "Вы" if m.get("role") == "user" else "AI"
-                self.chat_history.append(f"\n{role}: {m.get('content', '')}")
+                if m.get("role") == "assistant":
+                    last_ai_id = m.get("id", 0)
+            for m in messages:
+                role = m.get("role", "user")
+                meta = self._format_chat_time(m.get("created_at", ""))
+                prov = f"{m.get('provider', '')} · {m.get('model', '')}".strip(" ·")
+                self._add_message_card(
+                    role, m.get("content", ""), meta, prov,
+                    message_id=m.get("id", 0),
+                    can_regenerate=(m.get("id", 0) == last_ai_id and role == "assistant"))
         except Exception as e:
-            logger.error("render chat: %s", e)
+            logger.error("render chat cards: %s", e)
+
+    def _render_chat_session(self, session_id: str) -> None:
+        """Отрисовка истории сессии (карточки) + список диалогов."""
+        try:
+            self._refresh_chat_sessions(session_id)
+        except Exception:
+            pass
+        self._render_chat_cards(session_id)
+
+    def _refresh_chat_sessions(self, select_id: str = "") -> None:
+        """Комбобокс диалогов workspace (ТЗ §26: предыдущие диалоги)."""
+        try:
+            from gmod.services.chat_service import ChatService
+            service = ChatService(db=self.db)
+            sessions = service.list_sessions("default")
+            self.chat_session_combo.blockSignals(True)
+            self.chat_session_combo.clear()
+            for s in sessions:
+                title = s.get("title") or "Новый диалог"
+                self.chat_session_combo.addItem(title[:60], s["id"])
+            if select_id:
+                for i in range(self.chat_session_combo.count()):
+                    if self.chat_session_combo.itemData(i) == select_id:
+                        self.chat_session_combo.setCurrentIndex(i)
+                        break
+            self.chat_session_combo.blockSignals(False)
+        except Exception as e:
+            logger.debug("chat sessions refresh: %s", e)
+
+    def _on_chat_session_changed(self, index: int) -> None:
+        """Переключение на предыдущий диалог."""
+        try:
+            session_id = self.chat_session_combo.itemData(index)
+            if session_id:
+                self._chat_session_id = session_id
+                self._render_chat_cards(session_id)
+        except Exception as e:
+            logger.debug("chat session switch: %s", e)
+
+    def _on_new_chat_session(self) -> None:
+        """Новый диалог (ТЗ §26)."""
+        try:
+            from gmod.services.chat_service import ChatService
+            service = ChatService(db=self.db)
+            try:
+                provider = self.provider_combo.currentText()
+                model = self.model_combo.currentText()
+            except Exception:
+                provider, model = "", ""
+            session = service.get_or_create_session(
+                workspace_id="default",
+                repository_id=self._get_current_repo_id() or "",
+                provider=provider, model=model)
+            # get_or_create вернёт существующую — форсируем новую.
+            import uuid
+            session = {"id": f"chat_{uuid.uuid4().hex[:8]}", "workspace_id": "default",
+                       "repository_id": self._get_current_repo_id() or "",
+                       "provider": provider, "model": model,
+                       "title": "Новый диалог", "summary": ""}
+            self.db.save_chat_session(session)
+            self._chat_session_id = session["id"]
+            self._refresh_chat_sessions(session["id"])
+            self._render_chat_cards(session["id"])
+            self.status_bar.showMessage("Новый диалог создан")
+        except Exception as e:
+            logger.error("new chat session: %s", e)
+
+    def _on_clear_chat_session(self) -> None:
+        """Очистка только текущего диалога (ТЗ §26)."""
+        if not self._chat_session_id:
+            return
+        reply = QMessageBox.question(self, "Очистка диалога",
+                                     "Удалить все сообщения текущего диалога?",
+                                     QMessageBox.Yes | QMessageBox.No,
+                                     QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        try:
+            from gmod.services.chat_service import ChatService
+            ChatService(db=self.db).clear_session(self._chat_session_id)
+            self._render_chat_cards(self._chat_session_id)
+            self.status_bar.showMessage("Диалог очищен")
+        except Exception as e:
+            logger.error("clear chat: %s", e)
+
+    def _on_delete_chat_message(self, message_id: int) -> None:
+        """Удаление одного сообщения (ТЗ §26)."""
+        try:
+            from gmod.services.chat_service import ChatService
+            ChatService(db=self.db).delete_message(message_id)
+            if self._chat_session_id:
+                self._render_chat_cards(self._chat_session_id)
+        except Exception as e:
+            logger.error("delete message: %s", e)
+
+    def _on_regenerate_chat_message(self) -> None:
+        """Повторная генерация последнего ответа (ТЗ §26)."""
+        if not self._chat_session_id:
+            return
+        self.send_button.setEnabled(False)
+        self.send_button.setText("Ожидание...")
+        try:
+            from gmod.services.chat_service import ChatService
+            from PySide6.QtCore import QThread, Signal
+
+            service = ChatService(db=self.db)
+            repo_id = self._get_current_repo_id() or ""
+            repo_context = self._repo_chat_context(repo_id)
+
+            class RegenThread(QThread):
+                finished = Signal(dict)
+                error = Signal(str)
+
+                def __init__(self, service, session_id, repo_context):
+                    super().__init__()
+                    self.service = service
+                    self.session_id = session_id
+                    self.repo_context = repo_context
+
+                def run(self):
+                    try:
+                        self.finished.emit(self.service.regenerate(
+                            self.session_id, repository_context=self.repo_context))
+                    except Exception as e:
+                        self.error.emit(str(e))
+
+            self._regen_thread = RegenThread(service, self._chat_session_id, repo_context)
+            self._regen_thread.finished.connect(self._on_chat_finished)
+            self._regen_thread.error.connect(self._on_chat_error)
+            self._regen_thread.start()
+        except Exception as e:
+            logger.error("regenerate: %s", e)
+            self.send_button.setEnabled(True)
+            self.send_button.setText("Отправить")
 
     def _on_chat_finished(self, result: dict) -> None:
-        """Обработка завершения чата (ответ ChatService)."""
+        """Обработка завершения чата: перерисовка карточек из SQLite."""
         self.send_button.setEnabled(True)
         self.send_button.setText("Отправить")
         self.status_bar.showMessage("Готово")
 
         if result.get("status") == "success":
-            answer = (result.get("message") or {}).get("content", "")
-            self.chat_history.append("\nAI: " + (answer or "(пустой ответ)"))
             logger.info("Чат: ответ получен")
         else:
-            err_text = f"\nAI: Ошибка: {result.get('message', 'Unknown')}"
-            if result.get("hint"):
-                err_text += f"\nЧто делать: {result['hint']}"
-            self.chat_history.append(err_text)
             logger.error("Чат: %s", result.get("message", "Unknown"))
+            self._add_message_card(
+                "assistant",
+                f"Ошибка: {result.get('message', 'Unknown')}"
+                + (f"\nЧто делать: {result['hint']}" if result.get("hint") else ""),
+                "ошибка", "")
 
-        self.chat_history.verticalScrollBar().setValue(
-            self.chat_history.verticalScrollBar().maximum()
-        )
+        if self._chat_session_id:
+            self._render_chat_cards(self._chat_session_id)
+            try:
+                self._refresh_chat_sessions(self._chat_session_id)
+            except Exception:
+                pass
 
     def _on_chat_error(self, error: str) -> None:
         """Обработка ошибки чата."""
         self.send_button.setEnabled(True)
         self.send_button.setText("Отправить")
         self.status_bar.showMessage("Готово")
-        self.chat_history.append(f"\nAI: Ошибка: {error}")
+        self._add_message_card("assistant", f"Ошибка: {error}", "ошибка", "")
     
     def _on_gmod_button(self) -> None:
         """Обработка кнопки GMod - вызов зарезервированного серверного endpoint."""
