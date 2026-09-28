@@ -421,7 +421,8 @@ class NeuralDialog(QDialog):
             validation_split=float(self.ds_val_split.value()),
             seed=int(self.ds_seed.value()))
         self.train_config = cfg
-        self.trainer = Trainer(self.network, cfg, on_epoch=self._on_epoch_record)
+        # Колбэк эпох назначается в _on_train_start (мост в GUI-поток).
+        self.trainer = Trainer(self.network, cfg)
         return self.trainer
 
     def _on_train_start(self) -> None:

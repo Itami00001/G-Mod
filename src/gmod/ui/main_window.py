@@ -3408,6 +3408,18 @@ class MainWindow(QMainWindow):
         index = self._ensure_tab(tab_name)
         if index >= 0:
             self.central_tabs.setCurrentIndex(index)
+            # Обновление данных при показе вкладки (чтобы не было stale-списков).
+            try:
+                _refresh = {
+                    "Отчёты": self._refresh_reports,
+                    "Метрики": self._refresh_metrics,
+                    "История": self._refresh_history_tab
+                    if hasattr(self, "_refresh_history_tab") else None,
+                }.get(tab_name)
+                if _refresh is not None:
+                    _refresh()
+            except Exception as e:
+                logger.debug("tab refresh %s: %s", tab_name, e)
         else:
             self.status_bar.showMessage(f'Вкладка "{tab_name}" не найдена')
 
@@ -4555,6 +4567,7 @@ class MainWindow(QMainWindow):
 
     def _switch_to_repo(self, info: dict) -> None:
         """Последовательность смены репозитория (ТЗ §4.6)."""
+        from pathlib import Path
         from gmod.services.repository_service import SWITCHING, ACTIVE, ERROR
         from gmod.infrastructure.git.git_parser import GitParser
 
