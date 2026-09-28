@@ -1125,6 +1125,40 @@ class MainWindow(QMainWindow):
         session_row.addWidget(clear_chat_btn)
         chat_layout.addLayout(session_row)
 
+        # Строка контекста (ТЗ §1.3, §27): режим + инспектор + статус.
+        context_row = QHBoxLayout()
+        context_row.setSpacing(6)
+        context_row.addWidget(QLabel("Контекст:"))
+        self.chat_context_combo = QComboBox()
+        self.chat_context_combo.addItems(["Авто", "Краткий", "Стандартный", "Полный"])
+        self.chat_context_combo.setToolTip(
+            "Авто — AI сам выбирает релевантное; Краткий — README+дерево+сводки; "
+            "Стандартный — плюс исходники и метрики; Полный — максимум с разбиением.")
+        try:
+            _mode_map = {"auto": "Авто", "brief": "Краткий",
+                         "standard": "Стандартный", "full": "Полный"}
+            self.chat_context_combo.setCurrentText(
+                _mode_map.get(get_settings().chat_context_mode, "Авто"))
+        except Exception:
+            pass
+        context_row.addWidget(self.chat_context_combo)
+        inspect_btn = QPushButton("Что отправлено AI")
+        inspect_btn.setToolTip("Показать, какой контекст получил AI (ТЗ §1.4)")
+        inspect_btn.clicked.connect(self._show_context_inspector)
+        context_row.addWidget(inspect_btn)
+        nn_btn = QPushButton("Настроить нейросеть")
+        nn_btn.setToolTip("Открыть конструктор нейросети (ТЗ §11-12)")
+        nn_btn.clicked.connect(self._open_neural_dialog)
+        context_row.addWidget(nn_btn)
+        context_row.addStretch()
+        chat_layout.addLayout(context_row)
+
+        # AI Status (ТЗ §28): связь, репозиторий, метрики, git, история.
+        self.ai_status_label = QLabel("AI ● …  Context ● …")
+        self.ai_status_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.ai_status_label.setWordWrap(True)
+        chat_layout.addWidget(self.ai_status_label)
+
         # Область карточек сообщений (история из SQLite, ТЗ §9).
         self.chat_scroll = QScrollArea()
         self.chat_scroll.setWidgetResizable(True)
@@ -1424,6 +1458,13 @@ class MainWindow(QMainWindow):
             self.llm_status_dot.setStyleSheet(f"color: {color}; font-size: 16px;")
             self.status_bar.showMessage(msg)
             logger.info("LLM статус: %s (ok=%s)", msg, ok)
+            # Кэш для AI Status (ТЗ §28) — без повторных сетевых проверок.
+            self._llm_connected = bool(ok)
+            self._llm_status_text = msg
+            try:
+                self._refresh_ai_status()
+            except Exception:
+                pass
         except Exception as e:
             logger.error("LLM статус: ошибка проверки: %s", e, exc_info=True)
             self.llm_status_label.setText(f"Нейросеть недоступна. {e}")
@@ -3564,7 +3605,27 @@ class MainWindow(QMainWindow):
         W["max_tokens"] = QSpinBox()
         W["max_tokens"].setRange(100, 8000)
         W["max_tokens"].setValue(settings.max_tokens)
+        W["max_tokens"].setToolTip("Max tokens: максимальная длина ответа нейросети в токенах.")
         p3_layout.addRow("Max tokens:", W["max_tokens"])
+        W["llm_timeout"] = QSpinBox()
+        W["llm_timeout"].setRange(5, 600)
+        W["llm_timeout"].setValue(settings.llm_timeout)
+        W["llm_timeout"].setToolTip(
+            "Timeout: сколько секунд ждать ответа нейросети до ошибки.")
+        p3_layout.addRow("Timeout (сек):", W["llm_timeout"])
+        W["context_mode"] = QComboBox()
+        W["context_mode"].addItems(["auto", "brief", "standard", "full"])
+        W["context_mode"].setCurrentText(settings.chat_context_mode)
+        W["context_mode"].setToolTip(
+            "Режим контекста чата: auto — AI сам выбирает релевантное; "
+            "brief — кратко; standard — README+код+метрики; full — максимум.")
+        p3_layout.addRow("Режим контекста:", W["context_mode"])
+        W["context_depth"] = QSpinBox()
+        W["context_depth"].setRange(1, 30)
+        W["context_depth"].setValue(settings.chat_context_depth)
+        W["context_depth"].setToolTip(
+            "Context depth: максимум релевантных файлов, передаваемых AI.")
+        p3_layout.addRow("Глубина контекста (файлов):", W["context_depth"])
         pages.addWidget(_scroll_page(p3))
 
         # ---------- 4. Анализ ----------
@@ -3811,8 +3872,13 @@ class MainWindow(QMainWindow):
                 data["llm"]["system_prompt"] = W["system_prompt"].toPlainText()
                 data["llm"]["temperature"] = W["temperature"].value()
                 data["llm"]["max_tokens"] = W["max_tokens"].value()
-                for k in ("message_limit", "temperature", "max_tokens"):
+                data["llm"]["timeout"] = W["llm_timeout"].value()
+                for k in ("message_limit", "temperature", "max_tokens", "timeout"):
                     _save_to_sqlite("llm", k, data["llm"][k])
+                data.setdefault("chat", {})["context_mode"] = W["context_mode"].currentText()
+                data["chat"]["context_depth"] = W["context_depth"].value()
+                for k in ("context_mode", "context_depth"):
+                    _save_to_sqlite("chat", k, data["chat"][k])
 
                 data.setdefault("analysis", {})["metrics"] = {
                     name: {"enabled": cb.isChecked()}
@@ -4417,10 +4483,13 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda: self._send_message_async(text))
     
     def _send_message_async(self, text: str) -> None:
-        """Асинхронная отправка через ChatService (ТЗ §8: вопрос уходит в LLM)."""
+        """Отправка через ContextAssemblyService + ChatService (ТЗ §1, §8, §30)."""
         try:
+            from gmod.config.settings import get_settings
             from gmod.services.chat_service import ChatService
+            from gmod.services.context_service import ContextAssemblyService
 
+            settings = get_settings()
             config = self._build_llm_config_for_selection()
             # Пробрасываем параметры прогноза/анализа из вкладки «Анализ», если заданы
             try:
@@ -4441,23 +4510,70 @@ class MainWindow(QMainWindow):
             service = ChatService(
                 db=self.db, llm_config=config,
                 message_limit=int(config.get("llm", {}).get("message_limit", 7)))
+
+            # ТЗ §30: смена репозитория инвалидирует старый контекст —
+            # сессия всегда привязана к ТЕКУЩЕМУ repo_id.
             session = service.get_or_create_session(
                 workspace_id="default", repository_id=repo_id,
                 provider=provider, model=model)
+            if self._chat_session_id and self._chat_session_id != session["id"]:
+                logger.info("chat: контекст переключён (сессия %s)", session["id"])
+                self.status_bar.showMessage(
+                    f"Контекст: {session.get('repository_id') or 'без репозитория'}")
             self._chat_session_id = session["id"]
+            try:
+                self._refresh_chat_sessions(session["id"])
+            except Exception:
+                pass
 
-            # Контекст репозитория для промпта (файлы, коммит, метрики).
-            repo_context = self._repo_chat_context(repo_id)
-            workspace_context = (
-                f"Активная вкладка: {self.central_tabs.tabText(self.central_tabs.currentIndex())}"
-            )
+            # Сборка контекста единственным сервисом (ТЗ §1).
+            mode_map = {"Авто": "auto", "Краткий": "brief",
+                        "Стандартный": "standard", "Полный": "full"}
+            try:
+                mode = mode_map.get(self.chat_context_combo.currentText(), "auto")
+            except Exception:
+                mode = settings.chat_context_mode
+            repo_path = self._get_repo_path(repo_id) or ""
+            try:
+                ws = self.workspace_service.get_or_create()
+            except Exception:
+                ws = {"id": "default", "name": "Default"}
+            try:
+                active_tab = self.central_tabs.tabText(self.central_tabs.currentIndex())
+            except Exception:
+                active_tab = "Чат"
+            assembler = ContextAssemblyService(db=self.db)
+            assembled = assembler.assemble(
+                repo_id=repo_id, repo_path=repo_path, workspace=ws,
+                provider=provider.lower(), model=model, active_tab=active_tab,
+                question=text, mode=mode,
+                commit_hash="",
+                model_window=0)
+            # Метки для §30: snapshot текущего контекста.
+            if not hasattr(self, "_chat_snapshots"):
+                self._chat_snapshots = {}
+            prev_snapshot = self._chat_snapshots.get(session["id"])
+            if prev_snapshot and prev_snapshot != assembled.metrics_snapshot_id:
+                logger.info("chat: метрики обновлены с прошлой отправки (snapshot %s -> %s)",
+                            prev_snapshot, assembled.metrics_snapshot_id)
+            self._chat_snapshots[session["id"]] = assembled.metrics_snapshot_id
+            self._last_context = assembled
+            try:
+                self._refresh_ai_status()
+            except Exception:
+                pass
+
             system_prompt = (
-                "Ты — AI-ассистент GMod (Git Archaeologist). Отвечай по-русски, "
-                "кратко и по делу, опираясь на контекст репозитория."
+                "Ты — AI-ассистент GMod (Git Archaeologist). Отвечай по-русски. "
+                "Используй ТОЛЬКО переданный контекст: отличай факт от предположения, "
+                "указывай источники (файл/функция/коммит), не выдумывай содержимое "
+                "файлов и сообщай об отсутствии данных. (ТЗ §1.5)"
             )
             llm_kwargs = {
                 "temperature": float(config.get("llm", {}).get("temperature", 0.7)),
                 "max_tokens": int(config.get("llm", {}).get("max_tokens", 2000)),
+                "timeout": int(config.get("llm", {}).get("timeout",
+                               settings.llm_timeout)),
             }
 
             # Вопрос уже показан в _on_send_message; ответ придёт из потока.
@@ -4493,7 +4609,7 @@ class MainWindow(QMainWindow):
                         self.error.emit(str(e))
 
             self.chat_thread = ChatThread(service, session["id"], text, system_prompt,
-                                          workspace_context, repo_context, llm_kwargs)
+                                          "", assembled.text, llm_kwargs)
             self.chat_thread.finished.connect(self._on_chat_finished)
             self.chat_thread.error.connect(self._on_chat_error)
             self.chat_thread.start()
@@ -4505,8 +4621,109 @@ class MainWindow(QMainWindow):
             self.send_button.setText("Отправить")
             self.status_bar.showMessage("Готово")
 
+    def _refresh_ai_status(self) -> None:
+        """Панель AI Status (ТЗ §28): связь + что загружено в контекст."""
+        if not hasattr(self, "ai_status_label"):
+            return
+        connected = getattr(self, "_llm_connected", None)
+        if connected is True:
+            ai_part = "AI ● Connected"
+        elif connected is False:
+            ai_part = "AI ● недоступна"
+        else:
+            ai_part = "AI ● …"
+        ctx = getattr(self, "_last_context", None)
+        if ctx is None:
+            ctx_part = "Context ● ещё не собран (отправьте сообщение)"
+        else:
+            s = ctx.sections or {}
+            flags = [
+                ("Repository", "repository" if s.get("repository") else None),
+                ("Metrics", f"{s.get('metrics', 0)}" if s.get("metrics") else None),
+                ("Git", "loaded" if s.get("git") else None),
+                ("Files", f"{s.get('files', 0)}" if s.get("files") else None),
+            ]
+            ok_parts = [f"● {name} {val}" if val else f"⚠ {name} — нет данных"
+                        for name, val in flags]
+            # История — из текущей сессии.
+            try:
+                n = len(self.db.get_chat_messages(self._chat_session_id or "")) \
+                    if self._chat_session_id else 0
+            except Exception:
+                n = 0
+            ok_parts.append(f"● Chat history ({n})" if n else "⚠ Chat history — пусто")
+            if not s.get("metrics"):
+                ok_parts.append("⚠ Metrics are not available to AI")
+            ctx_part = "Context " + " · ".join(ok_parts)
+        self.ai_status_label.setText(f"{ai_part}    {ctx_part}")
+
+    def _show_context_inspector(self) -> None:
+        """Окно «Что отправлено AI» (ТЗ §1.4)."""
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                                       QPushButton, QTextEdit)
+        ctx = getattr(self, "_last_context", None)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("AI CONTEXT — что отправлено AI")
+        dialog.resize(700, 500)
+        layout = QVBoxLayout(dialog)
+        if ctx is None:
+            layout.addWidget(QLabel("Контекст ещё не собран. Отправьте сообщение в чат."))
+            dialog.exec()
+            return
+        s = ctx.sections or {}
+
+        def _mark(key, label, extra=""):
+            on = bool(s.get(key))
+            return f"{label}: {'✓' if on else '—'} {extra}".strip()
+
+        summary = "\n".join([
+            "AI CONTEXT",
+            _mark("workspace", "Workspace"),
+            _mark("repository", "Repository"),
+            f"README: {'✓' if s.get('readme') else '—'}",
+            _mark("git", "Git history"),
+            f"Current commit: {'✓ ' + ctx.commit_hash[:8] if ctx.commit_hash else '—'}",
+            f"Metrics: {'✓ ' + str(s.get('metrics', 0)) + ' records' if s.get('metrics') else '—'}",
+            f"Files: {'✓ ' + str(s.get('files', 0)) if s.get('files') else '—'}",
+            f"Relevant source: {'✓ ' + str(s.get('relevant_source', '')) if s.get('relevant_source') else '—'}",
+            f"Estimated tokens: {ctx.estimated_tokens}",
+            f"Truncated: {'да' if ctx.truncated else 'нет'}",
+            f"Snapshot: {ctx.metrics_snapshot_id or '—'}",
+        ])
+        layout.addWidget(QLabel(summary))
+        details = QTextEdit()
+        details.setReadOnly(True)
+        details.setFont(QFont("Consolas", 9))
+        details.setPlainText(ctx.text[:20000])
+        details.hide()
+        layout.addWidget(details, 1)
+        btn_row = QHBoxLayout()
+        show_btn = QPushButton("Показать подробности")
+        show_btn.setCheckable(True)
+        show_btn.toggled.connect(details.setVisible)
+        show_btn.toggled.connect(
+            lambda on: show_btn.setText("Скрыть подробности" if on else "Показать подробности"))
+        btn_row.addWidget(show_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+        dialog.exec()
+
+    def _open_neural_dialog(self) -> None:
+        """Окно «Настроить нейросеть» (ТЗ §11-12; полная реализация — фаза F)."""
+        try:
+            from gmod.ui.neural_dialog import NeuralDialog
+            dialog = NeuralDialog(self)
+            dialog.exec()
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            logger.error("neural dialog: %s", e)
+            QMessageBox.information(
+                self, "Настроить нейросеть",
+                "Конструктор нейросети в разработке (фаза F ТЗ v0.4).\n"
+                f"Технически: {e}")
+
     def _repo_chat_context(self, repo_id: str) -> str:
-        """Краткий контекст репозитория для чата (ТЗ §8: Repository Context)."""
+        """Краткий контекст репозитория (legacy; полный — ContextAssemblyService)."""
         if not repo_id:
             return "Репозиторий не загружен."
         try:

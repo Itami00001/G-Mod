@@ -219,6 +219,23 @@ class Settings:
         """Горизонт прогноза (коммитов вперёд) для UI ползунка."""
         return int(self.get("forecast", "horizon", default=5))
 
+    # ---------- Чат-контекст (ТЗ v0.4 §1.3) и таймауты ----------
+    @property
+    def chat_context_mode(self) -> str:
+        """Режим контекста: auto | brief | standard | full."""
+        mode = str(self.get("chat", "context_mode", default="auto")).lower()
+        return mode if mode in ("auto", "brief", "standard", "full") else "auto"
+
+    @property
+    def chat_context_depth(self) -> int:
+        """Максимум релевантных файлов в контексте."""
+        return int(self.get("chat", "context_depth", default=8))
+
+    @property
+    def llm_timeout(self) -> int:
+        """Таймаут LLM-запросов, секунд (ТЗ: описание Timeout)."""
+        return int(self.get("llm", "timeout", default=60))
+
     def build_llm_config(self) -> Dict[str, Any]:
         """Собрать dict конфигурации для LLMProviderFactory.
 
@@ -290,6 +307,7 @@ class Settings:
                 "message_limit": self.message_limit,
                 "temperature": self.temperature,
                 "max_tokens": self.max_tokens,
+                "timeout": self.llm_timeout,
             },
             "analysis": {
                 "depth": self.analysis_depth,

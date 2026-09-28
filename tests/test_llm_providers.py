@@ -49,20 +49,20 @@ class TestOllamaProvider:
         with patch("requests.get", side_effect=requests.ConnectionError("refused")):
             assert p.is_available() is False
 
-    def test_is_available_false_without_litellm(self):
+    def test_is_available_without_litellm(self):
+        # Native-режим не требует litellm: проверка идёт прямым HTTP.
         from gmod.infrastructure.llm import ollama_provider as mod
-        original = mod.LITELLM_AVAILABLE
-        try:
-            mod.LITELLM_AVAILABLE = False
-            from gmod.infrastructure.llm.ollama_provider import OllamaProvider
-            p = OllamaProvider.__new__(OllamaProvider)
-            p.url = "http://localhost:11434"
-            p.model = "llama3.2:3b"
-            # Патчим модульный атрибут
-            with patch.object(mod, "LITELLM_AVAILABLE", False):
-                assert p.is_available() is False
-        finally:
-            mod.LITELLM_AVAILABLE = original
+        from gmod.infrastructure.llm.ollama_provider import OllamaProvider
+        p = OllamaProvider.__new__(OllamaProvider)
+        p.url = "http://localhost:11434"
+        p.model = "llama3.2:3b"
+        p.api_key = None
+        p._local_mode = True
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        with patch.object(mod, "LITELLM_AVAILABLE", False), \
+             patch("requests.get", return_value=mock_resp):
+            assert p.is_available() is True
 
     def test_generate_calls_litellm(self):
         # По умолчанию generate идёт напрямую через /api/chat без litellm.

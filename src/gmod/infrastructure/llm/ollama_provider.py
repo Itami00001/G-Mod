@@ -91,6 +91,7 @@ class OllamaProvider(BaseLLMProvider):
         extra = dict(kwargs)
         temperature = extra.pop("temperature", 0.7)
         max_tokens = extra.pop("max_tokens", 2000)
+        timeout = extra.pop("timeout", 180)
         headers = {}
         if self.api_key and not self._local_mode:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -109,7 +110,7 @@ class OllamaProvider(BaseLLMProvider):
                 f"{self.url.rstrip('/')}/api/chat",
                 json=payload,
                 headers=headers,
-                timeout=180,
+                timeout=timeout,
             )
         except Exception as e:
             logger.error(f"Ollama native request failed: {e}")
