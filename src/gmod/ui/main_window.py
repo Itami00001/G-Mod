@@ -4319,31 +4319,57 @@ class MainWindow(QMainWindow):
             logger.error(f"GMod endpoint error: {e}")
     
     def _on_reset_workspace(self) -> None:
-        """Сброс рабочей области к значениям по умолчанию (prompt4 п.9)."""
+        """Сброс workspace по pipeline ТЗ §17: backup -> verify -> reset.
+
+        Сбрасывается только workspace/UI state; repository, metrics,
+        reports НЕ трогаем (ТЗ §21). Без валидного backup reset
+        НЕ выполняется (ТЗ §22).
+        """
         from gmod.config.constants import (
             DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT,
             DEFAULT_LEFT_DOCK_WIDTH, DEFAULT_RIGHT_DOCK_WIDTH,
         )
+        from gmod.services.backup_service import BackupService
 
         reply = QMessageBox.question(
-            self, "Сброс",
-            "Сбросить размеры, позицию и тему рабочей области?",
+            self, "Сброс рабочей области",
+            "Перед сбросом будет создана резервная копия (ZIP).\n"
+            "Сбросить геометрию, вкладки, шторки и тему?\n"
+            "(Репозиторий, метрики и отчёты сохранятся.)",
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
         try:
-            self.db.save_workspace_state("window_width", str(DEFAULT_WINDOW_WIDTH))
-            self.db.save_workspace_state("window_height", str(DEFAULT_WINDOW_HEIGHT))
-            self.db.save_workspace_state("left_dock_width", str(DEFAULT_LEFT_DOCK_WIDTH))
-            self.db.save_workspace_state("right_dock_width", str(DEFAULT_RIGHT_DOCK_WIDTH))
+            # Flush pending changes.
+            self._persist_workspace()
+            self.status_bar.showMessage("Создание резервной копии...")
+            QApplication.processEvents()
+            result = BackupService(db=self.db).reset_workspace(
+                "default", self._get_current_repo_id() or "")
+            if result.get("status") != "success":
+                QMessageBox.critical(
+                    self, "Сброс отменён",
+                    f"{result.get('message', '')}\n"
+                    "Рабочая область не была сброшена.")
+                self.status_bar.showMessage("Сброс отменён: нет резервной копии")
+                return
+            # Recreate UI defaults + reload workspace.
             self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
             self.left_dock.setMinimumWidth(DEFAULT_LEFT_DOCK_WIDTH)
             self.right_dock.setMinimumWidth(DEFAULT_RIGHT_DOCK_WIDTH)
+            self.left_dock.setVisible(True)
+            self.right_dock.setVisible(True)
             self._set_theme("dark")
-            self.status_bar.showMessage("Рабочая область сброшена")
+            self._save_tabs_state()
+            self.status_bar.showMessage(
+                f"Рабочая область сброшена. Backup: {result.get('backup', '')}")
+            QMessageBox.information(
+                self, "Готово",
+                f"Рабочая область сброшена.\nРезервная копия:\n{result.get('backup', '')}")
+            logger.info("workspace reset done, backup=%s", result.get("backup"))
         except Exception as e:
-            logger.error(f"Error resetting workspace: {e}")
+            logger.error(f"Error resetting workspace: {e}", exc_info=True)
             QMessageBox.critical(self, "Ошибка", f"Не удалось сбросить: {e}")
 
     def _on_about(self) -> None:
