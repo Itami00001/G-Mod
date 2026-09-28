@@ -45,7 +45,9 @@ DEFAULT_MAX_TOKENS = 2000
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+# Gemini: live API 29.09.2026 отклонил gemini-2.5-flash
+# ("no longer available to new users, use gemini-3.8-flash").
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
 
 # Дефолтные API-ключи НЕ хранятся в коде (GitHub push-protection их блокирует).
 # Задаются одним из способов (приоритет сверху вниз):
