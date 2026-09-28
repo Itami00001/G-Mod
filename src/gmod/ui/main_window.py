@@ -601,22 +601,11 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # Заголовок секции
+        # Заголовок секции (стиль — из gmod.qss, ТЗ §7).
         header = QPushButton(title)
         header.setCheckable(True)
         header.setChecked(True)
-        header.setStyleSheet("""
-            QPushButton {
-                text-align: left;
-                padding: 5px;
-                font-weight: bold;
-                border: none;
-                background: #f0f0f0;
-            }
-            QPushButton:checked {
-                background: #e0e0e0;
-            }
-        """)
+        header.setObjectName("GModSectionHeader")
         
         # Контент-виджет секции (хранит кнопки)
         content_widget = QWidget()
@@ -2837,6 +2826,31 @@ class MainWindow(QMainWindow):
         lower_layout.addStretch()
         self._attach_analysis_log_handler()
 
+        # Описания параметров анализа (ТЗ §8).
+        try:
+            from gmod.ui.setting_defs import describe as _describe2
+            for _attr, _dkey in (
+                ("param_complexity_weight", "metrics_weights"),
+                ("param_coupling_weight", "metrics_weights"),
+                ("param_size_weight", "metrics_weights"),
+                ("param_churn_weight", "metrics_weights"),
+                ("param_risk_threshold", "risk_threshold"),
+                ("param_min_confidence", "min_confidence"),
+                ("param_analysis_unit", "analysis_unit"),
+                ("param_diff_only", "diff_only"),
+                ("param_temperature", "temperature"),
+                ("param_max_tokens", "max_tokens"),
+                ("param_forecast_horizon", "forecast_horizon"),
+                ("param_epochs", "epochs"),
+                ("param_val_lr", "learning_rate"),
+            ):
+                if hasattr(self, _attr):
+                    _describe2(getattr(self, _attr), _dkey)
+            for _cb in list(getattr(self, "metrics_checkboxes", {}).values()):
+                _describe2(_cb, "metrics_weights")
+        except Exception as e:
+            logger.debug("analysis tooltips: %s", e)
+
         # Первичное обновление точности валидатора
         QTimer.singleShot(0, self._refresh_validator_accuracy)
 
@@ -2884,26 +2898,26 @@ class MainWindow(QMainWindow):
         card_layout = QVBoxLayout(card)
         card_layout.setAlignment(Qt.AlignTop)
         
-        # Статус
+        # Статус (цвета — из палитры ТЗ §7 через QSS-имена).
         status = QLabel("✓ АКТИВЕН" if active else "🚧 В РАЗРАБОТКЕ")
-        status.setStyleSheet("color: #4CAF50; font-weight: bold;" if active else "color: #999; font-weight: bold;")
+        status.setObjectName("GModStatusOk" if active else "GModStatusDim")
         card_layout.addWidget(status)
-        
+
         # Заголовок
         title_label = QLabel(title)
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold; margin: 10px 0;")
+        title_label.setObjectName("GModCardTitle")
         card_layout.addWidget(title_label)
-        
+
         # Описание
         desc_label = QLabel(description)
         desc_label.setWordWrap(True)
-        desc_label.setStyleSheet("color: #555; margin-bottom: 20px;")
+        desc_label.setObjectName("GModCardDesc")
         card_layout.addWidget(desc_label)
-        
+
         if active:
             # Параметры для активного режима
             params_label = QLabel("Параметры:")
-            params_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+            params_label.setObjectName("GModCardTitle")
             card_layout.addWidget(params_label)
             
             # Быстрые настройки
@@ -2923,7 +2937,7 @@ class MainWindow(QMainWindow):
             
             # Кнопка запуска
             run_btn = QPushButton("Запустить Археолога")
-            run_btn.setStyleSheet("background: #4CAF50; color: white; font-weight: bold; padding: 10px;")
+            run_btn.setObjectName("GModPrimaryButton")
             run_btn.clicked.connect(callback if callback else lambda: None)
             card_layout.addWidget(run_btn)
         else:
@@ -2931,7 +2945,7 @@ class MainWindow(QMainWindow):
             coming_soon = QLabel("Функционал будет доступен в следующих версиях")
             coming_soon.setWordWrap(True)
             coming_soon.setAlignment(Qt.AlignCenter)
-            coming_soon.setStyleSheet("color: #999; font-style: italic;")
+            coming_soon.setObjectName("GModStatusDim")
             card_layout.addWidget(coming_soon)
         
         return card
@@ -3922,6 +3936,39 @@ class MainWindow(QMainWindow):
         open_log_btn.clicked.connect(self._open_log_file)
         p10_layout.addRow(open_log_btn)
         pages.addWidget(_scroll_page(p10))
+
+        # Описания всех настроек (ТЗ §8): тултипы из единого реестра.
+        try:
+            from gmod.ui.setting_defs import describe as _describe
+            for _wkey, _dkey in (
+                ("limit", "message_limit"), ("system_prompt", "system_prompt"),
+                ("temperature", "temperature"), ("max_tokens", "max_tokens"),
+                ("llm_timeout", "timeout"), ("context_mode", "context_mode"),
+                ("context_depth", "context_depth"),
+                ("risk_threshold", "risk_threshold"),
+                ("min_confidence", "min_confidence"),
+                ("analysis_unit", "analysis_unit"), ("depth", "analysis_depth"),
+                ("theme", "theme"), ("font_family", "font_family"),
+                ("font_size", "font_size"), ("ui_lang", "ui_lang"),
+                ("db_limit", "db_limit"), ("log_level", "log_level"),
+                ("behavior_model", "behavior_model"),
+                ("groq_model", "model"), ("gemini_model", "model"),
+                ("openai_model", "model"), ("anthropic_model", "model"),
+                ("ollama_model", "model"),
+            ):
+                if _wkey in W:
+                    _describe(W[_wkey], _dkey)
+            for _cb in list(W.get("weights", {}).values()):
+                _describe(_cb, "metrics_weights")
+            for _cb in list(W.get("metrics_enabled", {}).values()):
+                _describe(_cb, "metrics_weights")
+            for _prov_entry in W.get("prov", {}).values():
+                for _sub in ("url", "api_key", "model_combo"):
+                    if _sub in _prov_entry:
+                        _describe(_prov_entry[_sub],
+                                  "model" if _sub == "model_combo" else "provider")
+        except Exception as e:
+            logger.debug("setting tooltips: %s", e)
 
         nav.setCurrentRow(0)
 

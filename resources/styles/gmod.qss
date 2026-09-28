@@ -82,6 +82,51 @@ QLabel#GModTitle {
     font-size: 13px;
 }
 
+/* Секции навигации и карточки (ТЗ §7) */
+QPushButton#GModSectionHeader {
+    text-align: left;
+    padding: 5px;
+    font-weight: bold;
+    border: none;
+    background: #182B45;
+    color: #DFC09A;
+}
+QPushButton#GModSectionHeader:checked {
+    background: #213A56;
+}
+QLabel#GModCardTitle {
+    font-size: 18px;
+    font-weight: bold;
+    color: #D8D4CB;
+}
+QLabel#GModCardDesc {
+    color: #A9A9A9;
+}
+QLabel#GModStatusOk {
+    color: #8FAF8A;
+    font-weight: bold;
+}
+QLabel#GModStatusDim {
+    color: #8B8686;
+    font-weight: bold;
+}
+QPushButton#GModPrimaryButton {
+    background: #997953;
+    color: #0B1630;
+    font-weight: bold;
+    padding: 10px;
+    border-radius: 6px;
+}
+QPushButton#GModPrimaryButton:hover {
+    background: #CDAA80;
+}
+
+/* Состояния (ТЗ §7): SUCCESS #8FAF8A, WARNING #C7A86B, ERROR #B87979, INFO #8EA7C4 */
+QLabel#GModStateSuccess { color: #8FAF8A; font-weight: bold; }
+QLabel#GModStateWarning { color: #C7A86B; font-weight: bold; }
+QLabel#GModStateError { color: #B87979; font-weight: bold; }
+QLabel#GModStateInfo { color: #8EA7C4; }
+
 /* Карточки режимов и сообщений чата */
 QFrame#GModCard {
     border: 1px solid #46586B;
