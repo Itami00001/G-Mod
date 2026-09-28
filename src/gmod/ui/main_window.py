@@ -37,6 +37,8 @@ class MainWindow(QMainWindow):
         """Инициализация главного окна."""
         super().__init__()
         self.db = get_database()
+        from gmod.services.workspace_service import WorkspaceService
+        self.workspace_service = WorkspaceService(db=self.db)
         self._restore_window_geometry()
         self._setup_ui()
         self._apply_theme()
@@ -44,6 +46,105 @@ class MainWindow(QMainWindow):
         self._restore_tabs_state()
         # Восстанавливаем состояние шторок после инициализации UI
         QTimer.singleShot(0, self._restore_dock_state)
+        # Миграция ключей YAML -> keyring (ТЗ §4.2), autosave (ТЗ §16).
+        QTimer.singleShot(1500, self._maybe_migrate_credentials)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.timeout.connect(self._persist_workspace)
+        self._autosave_timer.start(60000)
+
+    # ============ Workspace persistence (ТЗ §11-16) ============
+
+    def _persist_workspace(self) -> None:
+        """Сохранение workspace: repo + tabs + views (ТЗ §16, не только closeEvent)."""
+        try:
+            repo_id = self._get_current_repo_id() or ""
+            try:
+                active_tab = self.central_tabs.tabText(self.central_tabs.currentIndex())
+            except Exception:
+                active_tab = "Чат"
+            try:
+                theme = self.db.load_workspace_state("theme") or "dark"
+            except Exception:
+                theme = "dark"
+            self.workspace_service.save_state(repository_id=repo_id,
+                                              active_tab=active_tab, theme=theme)
+            # Вкладки: открытые + порядок.
+            try:
+                open_tabs = [self.central_tabs.tabText(i)
+                             for i in range(self.central_tabs.count())]
+                self.workspace_service.save_tabs(open_tabs, active_tab)
+            except Exception as e:
+                logger.debug("persist tabs: %s", e)
+            # Views: шторки + провайдер/модель чата.
+            try:
+                self.workspace_service.save_view(
+                    "left_dock", visible=self.left_dock.isVisible(),
+                    geometry={"width": self.left_dock.width()})
+                self.workspace_service.save_view(
+                    "right_dock", visible=self.right_dock.isVisible(),
+                    geometry={"width": self.right_dock.width()})
+            except Exception as e:
+                logger.debug("persist docks: %s", e)
+            try:
+                self.workspace_service.save_view(
+                    "chat_provider",
+                    state={"provider": self.provider_combo.currentText(),
+                           "model": self.model_combo.currentText()})
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug("persist workspace: %s", e)
+
+    def _maybe_migrate_credentials(self) -> None:
+        """Диалог миграции ключей config.yaml -> OS Credential Store (ТЗ §4.2)."""
+        try:
+            from gmod.config.settings import get_settings
+            from gmod.infrastructure.credentials.credential_service import (
+                get_credential_service,
+            )
+            settings = get_settings()
+            legacy = settings.legacy_keys()
+            if not legacy:
+                return
+            try:
+                import keyring  # noqa: F401
+            except Exception:
+                self.status_bar.showMessage(
+                    "keyring недоступен: ключи остаются в config.yaml")
+                return
+            names = ", ".join(sorted(legacy))
+            reply = QMessageBox.question(
+                self, "Безопасное хранение ключей",
+                f"В config.yaml найдены открытые ключи: {names}.\n"
+                "Перенести их в защищённое хранилище ОС "
+                "(Credential Manager) и удалить из YAML?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if reply != QMessageBox.Yes:
+                return
+            result = get_credential_service().migrate_from_legacy(legacy)
+            ok = [k for k, v in result.items() if v == "migrated"]
+            # Зачистка YAML.
+            try:
+                import yaml
+                from gmod.config.constants import CONFIG_FILE
+                from gmod.config.settings import reset_settings
+                data = {}
+                if CONFIG_FILE.exists():
+                    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                        data = yaml.safe_load(f) or {}
+                for p in data.get("llm", {}).get("providers", []):
+                    if isinstance(p, dict) and (p.get("name") or "").lower() in ok:
+                        p["api_key"] = ""
+                with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+                    yaml.safe_dump(data, f, allow_unicode=True)
+                reset_settings()
+            except Exception as e:
+                logger.error("credential migration YAML wipe: %s", e)
+            self.status_bar.showMessage(
+                f"Ключи перенесены в защищённое хранилище: {', '.join(ok)}")
+            logger.info("credentials migrated: %s", result)
+        except Exception as e:
+            logger.debug("credential migration check: %s", e)
     
     def _restore_last_repository(self) -> None:
         """Восстановление последнего проекта при старте (prompt4 п.10)."""
@@ -236,10 +337,18 @@ class MainWindow(QMainWindow):
     def _toggle_left_dock(self) -> None:
         """Переключение видимости левой шторки."""
         self.left_dock.setVisible(not self.left_dock.isVisible())
-    
+        try:
+            self._persist_workspace()
+        except Exception:
+            pass
+
     def _toggle_right_dock(self) -> None:
         """Переключение видимости правой шторки."""
         self.right_dock.setVisible(not self.right_dock.isVisible())
+        try:
+            self._persist_workspace()
+        except Exception:
+            pass
 
     def _create_left_dock(self) -> None:
         """Создание левой шторки."""
@@ -535,7 +644,7 @@ class MainWindow(QMainWindow):
         ]
 
     def _save_tabs_state(self) -> None:
-        """Сохранение набора и активной вкладки (workspace 1:1)."""
+        """Сохранение набора и активной вкладки (workspace 1:1 + entity)."""
         try:
             import json
 
@@ -545,6 +654,11 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             logger.error(f"Error saving tabs state: {e}")
+        # Дублируем в Workspace entity (ТЗ §13, §16: переключение вкладки).
+        try:
+            self._persist_workspace()
+        except Exception:
+            pass
 
     def _restore_tabs_state(self) -> None:
         """Восстановление набора и активной вкладки при старте."""
@@ -1145,6 +1259,7 @@ class MainWindow(QMainWindow):
         try:
             self.db.save_workspace_state("chat_provider", provider_name)
             self.db.save_workspace_state("chat_model", self.model_combo.currentText())
+            self._persist_workspace()
         except Exception:
             pass
         if hasattr(self, "llm_status_label"):
@@ -3814,6 +3929,10 @@ class MainWindow(QMainWindow):
             
             parser.save_repository_info(repo)
             self.db.save_workspace_state("current_repo_id", repo.id)
+            try:
+                self.workspace_service.save_state(repository_id=repo.id)
+            except Exception:
+                pass
             
             # Скрываем поле URL, показываем вкладки
             self.repo_url_widget.hide()
@@ -4256,6 +4375,14 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._save_tabs_state()
+        try:
+            self._autosave_timer.stop()
+        except Exception:
+            pass
+        try:
+            self._persist_workspace()
+        except Exception:
+            pass
 
         logger.info("Application closing, workspace state saved")
         event.accept()
