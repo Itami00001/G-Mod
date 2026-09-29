@@ -434,3 +434,104 @@ def test_model_load(tmp_path):
     assert "weights" in data and "layer_0" in data["weights"]
     items = ms.list_models()
     assert items and items[0]["model_id"] == mid
+
+
+# ============================================================
+# Прогноз/контекст/сравнение/палитра (багфиксы сессии)
+# ============================================================
+
+def test_execute_history(tmp_path, tmp_db):
+    """История метрик по N коммитам для прогноза."""
+    repo_dir = tmp_path / "h"
+    repo_dir.mkdir()
+    import git
+    repo = git.Repo.init(repo_dir)
+    (repo_dir / "a.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    repo.index.add(["a.py"])
+    repo.index.commit("one")
+    (repo_dir / "a.py").write_text("def f():\n    x = 1\n    return x\n",
+                                   encoding="utf-8")
+    repo.index.add(["a.py"])
+    repo.index.commit("two")
+    from gmod.domain.entities import Repository
+    from gmod.usecases.analyze_repository import AnalyzeRepositoryUseCase
+    r = Repository(id="h", url="", local_path=str(repo_dir), name="h")
+    res = AnalyzeRepositoryUseCase().execute_history(r, max_commits=5)
+    assert res["status"] == "success"
+    assert res["commits_analyzed"] >= 1
+    assert res["metrics_computed"] > 0
+
+
+def test_context_reports_section(tmp_db):
+    """AI-отчёты попадают в контекст."""
+    tmp_db.save_ai_report("r1", "c1", "archaeologist", "p",
+                          '{"risk_score": 5, "reason": "r"}', 5)
+    from gmod.services.context_service import ContextAssemblyService
+    svc = ContextAssemblyService(db=tmp_db)
+    ctx = svc.assemble(repo_id="r1", repo_path="", mode="standard")
+    assert ctx.sections.get("reports") == 1
+    assert "Past AI reports" in ctx.text
+
+
+def test_metrics_commit_fallback(tmp_db):
+    """Метрики чужого коммита -> fallback на весь репозиторий."""
+    _seed_metrics(tmp_db, repo_id="r1", commit="oldzzz")
+    from gmod.services.context_service import ContextAssemblyService
+    svc = ContextAssemblyService(db=tmp_db)
+    ctx = svc.build_metrics_context("r1", "newhead123")
+    assert ctx.total == 4
+    assert ctx.fallback_repo_wide is True
+
+
+def test_compare_dialog_opens(tmp_db, tmp_path, monkeypatch):
+    """Регрессия KeyError: диалог сравнения открывается (offscreen)."""
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import gmod.infrastructure.db.database as dbm
+    old_singleton = dbm._db_instance
+    dbm._db_instance = tmp_db
+    try:
+        from PySide6.QtWidgets import QApplication, QDialog
+        from PySide6.QtCore import Qt
+        app = QApplication.instance() or QApplication([])
+        from gmod.ui.main_window import MainWindow
+        w = MainWindow()
+        w.db.save_ai_report("rb", "c1", "archaeologist", "p",
+                            '{"risk_score": 4, "reason": "ok"}', 4)
+        w.db.save_ai_report("rb", "c2", "archaeologist", "p",
+                            '{"risk_score": 7, "reason": "bad"}', 7)
+        w.db.save_workspace_state("current_repo_id", "rb")
+        w._switch_to_tab("Отчёты")
+        app.processEvents()
+        assert w.reports_list.count() >= 2
+        w.reports_list.item(0).setCheckState(Qt.Checked)
+        w.reports_list.item(1).setCheckState(Qt.Checked)
+        app.processEvents()
+        assert w.compare_btn.isEnabled()
+        opened = []
+        monkeypatch.setattr(QDialog, "exec",
+                            lambda self: opened.append(self.windowTitle()) or 1)
+        w._compare_reports()
+        assert opened == ["Сравнение отчётов"]
+        w.close()
+    finally:
+        dbm._db_instance = old_singleton
+
+
+def test_palette_no_banned_colors():
+    """ТЗ палитра: запрещённых цветов нет ни в QSS, ни в коде."""
+    import re
+    banned = ("#f0f0f0", "#e0e0e0", "#2a82da")
+    root = Path(__file__).parent.parent
+    checked = []
+    for pattern in ("src/**/*.py", "resources/**/*.qss"):
+        for path in root.glob(pattern):
+            text = path.read_text(encoding="utf-8", errors="ignore").lower()
+            for color in banned:
+                assert color not in text, f"{color} в {path}"
+                checked.append(str(path))
+    assert checked
+    qss = (root / "resources" / "styles" / "gmod.qss").read_text(encoding="utf-8")
+    for required in ("#0B1630", "#CDAA80", "#C0C0C0", "#8FAF8A",
+                     "#C7A86B", "#B87979", "#8EA7C4"):
+        assert required in qss, f"нет {required} в QSS"

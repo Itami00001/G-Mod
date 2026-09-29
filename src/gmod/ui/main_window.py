@@ -417,9 +417,13 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(5, 5, 5, 5)
         
         # Навигация по дизайн-системе (ТЗ §28).
-        def _nav_button(text: str, slot) -> QPushButton:
+        self._nav_buttons = {}
+
+        def _nav_button(text: str, slot, tab_key: str = "") -> QPushButton:
             btn = QPushButton(text)
             btn.clicked.connect(slot)
+            if tab_key:
+                self._nav_buttons[tab_key] = btn
             return btn
 
         # Секция "PROJECT"
@@ -427,8 +431,11 @@ class MainWindow(QMainWindow):
         project_layout = self._get_section_layout(project_section)
 
         project_layout.addWidget(_nav_button(
-            "Обзор", lambda: self._switch_to_tab("Обзор")))
-        project_layout.addWidget(_nav_button("Файлы", self._focus_repo_files))
+            "Обзор", lambda: self._switch_to_tab("Обзор"), "Обзор"))
+        files_btn = QPushButton("Файлы")
+        files_btn.clicked.connect(self._focus_repo_files)
+        self._nav_buttons["Файлы"] = files_btn
+        project_layout.addWidget(files_btn)
 
         left_layout.addWidget(project_section)
 
@@ -437,13 +444,13 @@ class MainWindow(QMainWindow):
         analysis_layout = self._get_section_layout(analysis_section)
 
         analysis_layout.addWidget(_nav_button(
-            "Метрики", lambda: self._switch_to_tab("Метрики")))
+            "Метрики", lambda: self._switch_to_tab("Метрики"), "Метрики"))
         analysis_layout.addWidget(_nav_button(
-            "Граф", lambda: self._switch_to_tab("Граф")))
+            "Граф", lambda: self._switch_to_tab("Граф"), "Граф"))
         analysis_layout.addWidget(_nav_button(
-            "Анализ", lambda: self._switch_to_tab("Анализ")))
+            "Анализ", lambda: self._switch_to_tab("Анализ"), "Анализ"))
         analysis_layout.addWidget(_nav_button(
-            "История", lambda: self._switch_to_tab("История")))
+            "История", lambda: self._switch_to_tab("История"), "История"))
 
         left_layout.addWidget(analysis_section)
 
@@ -452,9 +459,9 @@ class MainWindow(QMainWindow):
         ai_layout = self._get_section_layout(ai_section)
 
         ai_layout.addWidget(_nav_button(
-            "Чат", lambda: self._switch_to_tab("Чат")))
+            "Чат", lambda: self._switch_to_tab("Чат"), "Чат"))
         ai_layout.addWidget(_nav_button(
-            "Отчёты", lambda: self._switch_to_tab("Отчёты")))
+            "Отчёты", lambda: self._switch_to_tab("Отчёты"), "Отчёты"))
 
         left_layout.addWidget(ai_section)
 
@@ -463,9 +470,10 @@ class MainWindow(QMainWindow):
         system_layout = self._get_section_layout(system_section)
 
         system_layout.addWidget(_nav_button(
-            "Настройки", lambda: self._switch_to_tab("Настройки")))
+            "Настройки", lambda: self._switch_to_tab("Настройки"), "Настройки"))
         system_layout.addWidget(_nav_button(
-            "Резервные копии", lambda: self._switch_to_tab("Резервные копии")))
+            "Резервные копии", lambda: self._switch_to_tab("Резервные копии"),
+            "Резервные копии"))
 
         gmod_btn = QPushButton("Использовать GMod")
         gmod_btn.clicked.connect(self._on_gmod_button)
@@ -487,6 +495,19 @@ class MainWindow(QMainWindow):
                 self.repo_tabs.setCurrentIndex(0)
         except Exception as e:
             logger.debug("focus files: %s", e)
+
+    def _highlight_nav_for_tab(self, tab_name: str) -> None:
+        """Подсветка активного пункта навигации (Silver → gold, палитра)."""
+        buttons = getattr(self, "_nav_buttons", {}) or {}
+        if not buttons:
+            return
+        for key, btn in buttons.items():
+            try:
+                btn.setProperty("navActive", key == tab_name)
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
+            except Exception:
+                pass
     
     def _create_right_dock(self) -> None:
         """Создание правой шторки (prompt4 п.7)."""
@@ -2323,7 +2344,7 @@ class MainWindow(QMainWindow):
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.verticalHeader().setVisible(False)
         for row_idx, row in enumerate(result["rows"]):
-            for col_idx, key in (("field", 0), ("a", 1), ("b", 2)):
+            for key, col_idx in (("field", 0), ("a", 1), ("b", 2)):
                 cell = QTableWidgetItem(row[key])
                 if row["changed"] and col_idx > 0:
                     cell.setBackground(QColor("#4a3a1a"))
@@ -3001,8 +3022,9 @@ class MainWindow(QMainWindow):
                 def run(self):
                     try:
                         from gmod.usecases.run_archaeologist import RunArchaeologistUseCase
+                        from gmod.usecases.analyze_repository import AnalyzeRepositoryUseCase
                         from gmod.domain.entities import Repository
-                        
+
                         # Создаём репозиторий
                         repo = Repository(
                             id=self.repo_id,
@@ -3010,7 +3032,15 @@ class MainWindow(QMainWindow):
                             local_path=self.config.get("repo_path", ""),
                             name=self.repo_id
                         )
-                        
+
+                        # Метрики для коммита — обязательное условие археолога.
+                        # Если их нет (первый запуск), считаем сами, а не падаем.
+                        metrics_usecase = AnalyzeRepositoryUseCase()
+                        existing = metrics_usecase.get_analysis_results(
+                            self.repo_id, self.commit_hash)
+                        if not existing:
+                            metrics_usecase.execute(repo, self.commit_hash)
+
                         usecase = RunArchaeologistUseCase(self.config)
                         result = usecase.execute(repo, self.commit_hash)
                         self.finished.emit(result)
@@ -3263,7 +3293,11 @@ class MainWindow(QMainWindow):
             self.func_status_label.setText(f"Ошибка: {e}")
 
     def _on_forecast_risk(self) -> None:
-        """Прогноз риска на N коммитов вперёд: тренд метрик + LLM + вердикт валидатора."""
+        """Прогноз риска: тренд по истории + LLM + вердикт валидатора.
+
+        Если истории нет — сначала считает метрики по последним коммитам
+        (execute_history), если коммит один — даёт точечную оценку.
+        """
         repo_id = self._get_current_repo_id()
         if not repo_id:
             self.forecast_label.setText("Сначала загрузите репозиторий")
@@ -3272,17 +3306,76 @@ class MainWindow(QMainWindow):
             horizon = int(self.param_forecast_horizon.value())
         except Exception:
             horizon = 5
-        try:
+
+        def _load_points():
             with self.db.get_connection() as conn:
                 cur = conn.cursor()
                 cur.execute("""
                     SELECT commit_hash, AVG(value) FROM raw_metrics
                     WHERE repo_id = ? GROUP BY commit_hash ORDER BY timestamp DESC LIMIT 20
                 """, (repo_id,))
-                points = list(reversed(cur.fetchall()))
+                return list(reversed(cur.fetchall()))
+
+        try:
+            points = _load_points()
             if len(points) < 2:
-                self.forecast_label.setText("Недостаточно истории метрик для прогноза — запустите анализ")
+                # Истории нет — считаем метрики по последним коммитам.
+                self.forecast_label.setText("Считаю историю метрик по коммитам...")
+                QApplication.processEvents()
+                try:
+                    from gmod.domain.entities import Repository
+                    from gmod.usecases.analyze_repository import AnalyzeRepositoryUseCase
+                    repo_path = self._get_repo_path(repo_id)
+                    repo = Repository(id=repo_id, url="", local_path=repo_path or "",
+                                      name=repo_id)
+                    hist = AnalyzeRepositoryUseCase().execute_history(repo, max_commits=5)
+                    logger.info("Прогноз: история посчитана: %s", hist.get("per_commit"))
+                except Exception as e:
+                    logger.warning("Прогноз: история не посчиталась: %s", e)
+                points = _load_points()
+            if not points:
+                self.forecast_label.setText(
+                    "Метрики не получилось рассчитать: нет данных. "
+                    "Запустите анализ во вкладке «Анализ».")
                 return
+            if len(points) == 1:
+                self._forecast_single_point(repo_id, points[0], horizon)
+                return
+            self._forecast_from_trend(repo_id, points, horizon)
+        except Exception as e:
+            logger.error("Ошибка прогноза: %s", e, exc_info=True)
+            self.forecast_label.setText(f"Ошибка прогноза: {e}")
+
+    def _forecast_single_point(self, repo_id: str, point, horizon: int) -> None:
+        """Точечная оценка при единственном коммите с метриками (без тренда)."""
+        current = float(point[1])
+        risk_guess = max(1, min(10, int(round(current)))) if current <= 10 else 6
+        llm_text = ""
+        try:
+            from gmod.infrastructure.llm.factory import LLMProviderFactory
+            cfg = self._build_llm_config_for_selection()
+            factory = LLMProviderFactory(cfg)
+            llm_text = factory.generate_with_fallback(
+                f"Средняя метрика кода: {current:.2f} (единственный замер, тренда нет). "
+                f"Оцени риск 1-10 и дай 2 предложения по-русски.",
+                temperature=float(self.param_temperature.value()),
+                max_tokens=min(int(self.param_max_tokens.value()), 800))
+        except Exception as e:
+            logger.warning("Прогноз LLM недоступен: %s", e)
+            llm_text = "Нейросеть недоступна — показана только текущая оценка."
+        try:
+            verdict, _p = self._get_validator().verdict(
+                risk_guess, {"complexity": risk_guess, "churn": 0, "size": 0, "coupling": 0})
+        except Exception:
+            verdict = ""
+        self.forecast_label.setText(
+            f"История из 1 коммита — тренд построить не из чего. "
+            f"Текущее среднее: {current:.2f}. {llm_text[:400]} {verdict}")
+        logger.info("Прогноз точечный: avg=%.3f", current)
+
+    def _forecast_from_trend(self, repo_id: str, points, horizon: int) -> None:
+        """Классический прогноз по линейному тренду истории."""
+        try:
             # Линейный тренд (оптимизация: без numpy)
             ys = [float(p[1]) for p in points]
             n = len(ys)
@@ -3316,9 +3409,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 verdict = ""
             self.forecast_label.setText(
-                f"Тренд {trend} (наклон {slope:+.3f}). Прогноз: "
+                f"Тренд {trend} (наклон {slope:+.3f}, коммитов: {n}). Прогноз: "
                 f"{', '.join(f'{x:.2f}' for x in forecast_vals)}. {llm_text[:400]} {verdict}")
-            logger.info("Прогноз риска: horizon=%d slope=%.3f", horizon, slope)
+            logger.info("Прогноз риска: horizon=%d slope=%.3f points=%d", horizon, slope, n)
         except Exception as e:
             logger.error("Ошибка прогноза: %s", e, exc_info=True)
             self.forecast_label.setText(f"Ошибка прогноза: {e}")
@@ -3399,15 +3492,27 @@ class MainWindow(QMainWindow):
         # Создаём вкладку Настройки по требованию
         if tab_name == "Настройки":
             self._create_settings_tab()
+            try:
+                self._highlight_nav_for_tab(tab_name)
+            except Exception:
+                pass
             return
         # Вкладка резервных копий (ТЗ §28 SYSTEM).
         if tab_name == "Резервные копии":
             self._create_backups_tab()
+            try:
+                self._highlight_nav_for_tab(tab_name)
+            except Exception:
+                pass
             return
 
         index = self._ensure_tab(tab_name)
         if index >= 0:
             self.central_tabs.setCurrentIndex(index)
+            try:
+                self._highlight_nav_for_tab(tab_name)
+            except Exception:
+                pass
             # Обновление данных при показе вкладки (чтобы не было stale-списков).
             try:
                 _refresh = {
@@ -5022,7 +5127,9 @@ class MainWindow(QMainWindow):
             f"README: {'✓' if s.get('readme') else '—'}",
             _mark("git", "Git history"),
             f"Current commit: {'✓ ' + ctx.commit_hash[:8] if ctx.commit_hash else '—'}",
-            f"Metrics: {'✓ ' + str(s.get('metrics', 0)) + ' records' if s.get('metrics') else '—'}",
+            f"Metrics: {'✓ ' + str(s.get('metrics', 0)) + ' records' if s.get('metrics') else '—'}"
+            + (f" ({s.get('metrics_scope')})" if s.get("metrics_scope") else ""),
+            f"AI reports: {'✓ ' + str(s.get('reports', 0)) if s.get('reports') else '—'}",
             f"Files: {'✓ ' + str(s.get('files', 0)) if s.get('files') else '—'}",
             f"Relevant source: {'✓ ' + str(s.get('relevant_source', '')) if s.get('relevant_source') else '—'}",
             f"Estimated tokens: {ctx.estimated_tokens}",
@@ -5150,7 +5257,7 @@ class MainWindow(QMainWindow):
         if provider_label:
             header_parts.append(str(provider_label))
         header = QLabel(" · ".join(header_parts))
-        header.setStyleSheet("color: #8B8686; font-size: 11px;")
+        header.setObjectName("GModChatMeta")
         card_layout.addWidget(header)
 
         body = QLabel(content or "(пусто)")

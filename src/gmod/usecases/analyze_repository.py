@@ -130,8 +130,71 @@ class AnalyzeRepositoryUseCase:
         
         logger.info(f"[ANALYSIS] Completed: {results['files_analyzed']} files, "
                     f"{results['units_analyzed']} units, {results['metrics_computed']} metrics")
-        
+
         return results
+
+    def execute_history(self, repository: Repository,
+                        max_commits: int = 5) -> Dict:
+        """Расчёт метрик по последним N коммитам (для прогноза/трендов).
+
+        Метрики каждого коммита привязываются к своему хешу, поэтому
+        прогноз получает историю, а не одну точку. Коммиты без
+        поддерживаемых файлов пропускаются молча.
+
+        Args:
+            repository: Сущность репозитория (с local_path)
+            max_commits: Сколько последних коммитов обойти
+
+        Returns:
+            Словарь с агрегатами + per-commit разбивкой
+        """
+        logger.info("[HISTORY] Анализ истории %s (до %d коммитов)",
+                    repository.id, max_commits)
+        self.git_parser.save_repository_info(repository)
+        try:
+            commits = self.git_parser.get_commits(repository.id, limit=max_commits)
+        except Exception as e:
+            logger.error("[HISTORY] Нет коммитов: %s", e)
+            return {"status": "error", "message": f"No commits: {e}",
+                    "commits_analyzed": 0}
+
+        total = {"status": "success", "repository_id": repository.id,
+                 "commits_analyzed": 0, "files_analyzed": 0,
+                 "units_analyzed": 0, "metrics_computed": 0,
+                 "errors": [], "per_commit": []}
+        for commit in commits[:max_commits]:
+            try:
+                changed = self._get_changed_files(repository, commit.hash)
+            except Exception as e:
+                logger.warning("[HISTORY] %s: файлы не получены: %s",
+                               commit.hash[:8], e)
+                continue
+            if not changed:
+                continue
+            entry = {"commit": commit.hash[:8], "files": 0,
+                     "units": 0, "metrics": 0}
+            for file_path in changed:
+                try:
+                    fr = self._analyze_file(repository, commit.hash, file_path)
+                    entry["files"] += 1
+                    entry["units"] += fr["units_analyzed"]
+                    entry["metrics"] += fr["metrics_computed"]
+                except Exception as e:
+                    total["errors"].append(f"{commit.hash[:8]}:{file_path}: {e}")
+            if entry["metrics"] == 0:
+                continue
+            total["commits_analyzed"] += 1
+            total["files_analyzed"] += entry["files"]
+            total["units_analyzed"] += entry["units"]
+            total["metrics_computed"] += entry["metrics"]
+            total["per_commit"].append(entry)
+            logger.info("[HISTORY] %s: файлов=%d метрик=%d",
+                        entry["commit"], entry["files"], entry["metrics"])
+
+        if total["commits_analyzed"] == 0:
+            total["status"] = "error"
+            total["message"] = "No supported changes in recent commits"
+        return total
     
     def _get_changed_files(self, repository: Repository, commit_hash: str) -> List[str]:
         """Получение списка изменённых файлов в коммите."""

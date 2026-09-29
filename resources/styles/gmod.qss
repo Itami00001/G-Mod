@@ -26,7 +26,7 @@ QTabWidget::pane {
 }
 QTabBar::tab {
     background: #182B45;
-    color: #A9A9A9;
+    color: #C0C0C0;
     padding: 6px 12px;
     border: 1px solid #29445F;
     border-bottom: none;
@@ -43,7 +43,7 @@ QTabBar::tab:hover {
 
 QPushButton {
     background: #213A56;
-    color: #D8D4CB;
+    color: #C0C0C0;
     border: 1px solid #46586B;
     border-radius: 4px;
     padding: 5px 12px;
@@ -111,14 +111,28 @@ QLabel#GModStatusDim {
     font-weight: bold;
 }
 QPushButton#GModPrimaryButton {
-    background: #997953;
+    background: #CDAA80;
     color: #0B1630;
     font-weight: bold;
     padding: 10px;
     border-radius: 6px;
 }
 QPushButton#GModPrimaryButton:hover {
-    background: #CDAA80;
+    background: #DFC09A;
+}
+
+/* Левая навигация: пункты Silver, активный — gold (ТЗ). */
+QDockWidget QPushButton {
+    color: #C0C0C0;
+}
+QPushButton[navActive="true"] {
+    color: #DFC09A;
+    font-weight: bold;
+}
+/* Метаданные карточек чата. */
+QLabel#GModChatMeta {
+    color: #C0C0C0;
+    font-size: 11px;
 }
 
 /* Состояния (ТЗ §7): SUCCESS #8FAF8A, WARNING #C7A86B, ERROR #B87979, INFO #8EA7C4 */
@@ -176,7 +190,7 @@ QGroupBox::title {
 
 QStatusBar {
     background: #0B1630;
-    color: #A9A9A9;
+    color: #C0C0C0;
 }
 QStatusBar::item {
     border: none;
@@ -208,7 +222,7 @@ QTableView, QTreeView, QListWidget {
 }
 QHeaderView::section {
     background: #182B45;
-    color: #DFC09A;
+    color: #C0C0C0;
     border: 1px solid #29445F;
     padding: 4px;
 }

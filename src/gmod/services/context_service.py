@@ -94,6 +94,9 @@ class MetricsContext:
     averages: Dict[str, float] = field(default_factory=dict)
     outliers: List[Dict[str, Any]] = field(default_factory=list)
     snapshot_id: str = ""
+    # True, если под запрошенный коммит строк не было и взяты метрики
+    # всего репозитория (лучше, чем пустой контекст).
+    fallback_repo_wide: bool = False
 
 
 @dataclass
@@ -280,17 +283,25 @@ class ContextAssemblyService:
         try:
             with self.db.get_connection() as conn:
                 cur = conn.cursor()
+                rows = []
                 if commit_hash:
                     cur.execute("""
                         SELECT file_path, unit_type, unit_name, metric_name, value
                         FROM raw_metrics WHERE repo_id = ? AND commit_hash = ?
                     """, (repo_id, commit_hash))
-                else:
+                    rows = cur.fetchall()
+                if not rows:
+                    # Fallback: метрики всего репозитория вместо пустоты.
+                    # Бывает, когда HEAD сдвинулся после расчёта метрик.
                     cur.execute("""
                         SELECT file_path, unit_type, unit_name, metric_name, value
                         FROM raw_metrics WHERE repo_id = ?
                     """, (repo_id,))
-                rows = cur.fetchall()
+                    rows = cur.fetchall()
+                    if rows and commit_hash:
+                        ctx.fallback_repo_wide = True
+                        logger.info("context metrics: коммит %s пуст, взят весь репозиторий",
+                                    commit_hash[:8])
             if not rows:
                 return ctx
             from collections import defaultdict
@@ -340,6 +351,32 @@ class ContextAssemblyService:
         except Exception as e:
             logger.error("context metrics: %s", e)
         return ctx
+
+    # ---------------- AI-отчёты в контексте ----------------
+
+    def build_reports_context(self, repo_id: str,
+                              limit: int = 3) -> List[Dict[str, Any]]:
+        """Последние AI-отчёты для контекста (риск + суть, не весь JSON)."""
+        out: List[Dict[str, Any]] = []
+        try:
+            for report in self.db.get_ai_reports(repo_id)[:limit]:
+                try:
+                    import json as _json
+                    data = _json.loads(report.get("response_json", "") or "{}")
+                    if not isinstance(data, dict):
+                        data = {}
+                except Exception:
+                    data = {}
+                out.append({
+                    "agent": report.get("agent_type", ""),
+                    "commit": str(report.get("commit_hash", ""))[:8],
+                    "risk": report.get("risk_score"),
+                    "reason": str(data.get("reason", ""))[:500],
+                    "recommendation": str(data.get("recommendation", ""))[:500],
+                })
+        except Exception as e:
+            logger.debug("context reports: %s", e)
+        return out
 
     # ---------------- Retrieval (ТЗ §1.2) ----------------
 
@@ -523,8 +560,26 @@ class ContextAssemblyService:
                 m_text = "\n".join(lines)
                 m_count = metrics_ctx.total
             _add("Metrics", m_text, "metrics", m_count)
+            if metrics_ctx.fallback_repo_wide:
+                sections["metrics_scope"] = "repo-wide (коммит пуст)"
         else:
             sections["metrics"] = 0
+
+        # AI-отчёты: прошлые выводы нейросети — тоже контекст проекта.
+        if mode in ("standard", "auto", "full"):
+            past_reports = self.build_reports_context(repo_id, limit=3)
+            if past_reports:
+                rep_lines = []
+                for rep in past_reports:
+                    rep_lines.append(
+                        f"[{rep['agent']} {rep['commit']}] риск {rep['risk']}: "
+                        f"{rep['reason'][:300]}")
+                    if rep["recommendation"]:
+                        rep_lines.append(f"  Совет был: {rep['recommendation'][:300]}")
+                _add("Past AI reports", "\n".join(rep_lines),
+                     "reports", len(past_reports))
+            else:
+                sections["reports"] = 0
 
         # Relevant source (standard/auto/full).
         relevant: Dict[str, Any] = {}
