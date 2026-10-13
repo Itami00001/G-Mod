@@ -143,35 +143,50 @@ class RepositoryService:
                     "message": "Целевая папка существует и не является Git repository."}
         return {"action": "clone_safe", "path": str(target), "url": text}
 
-    def clone_safe(self, url: str, target: Path) -> Dict[str, Any]:
-        """Безопасный clone: tmp -> verify -> move (ТЗ §4.5).
+    def clone_safe(self, url: str, target: Path, retries: int = 3) -> Dict[str, Any]:
+        """Безопасный clone: %TEMP% -> verify -> move (против WinError 5).
 
-        current_repo_id НЕ меняется — это делает UI после успеха.
+        - Клонирование во временную папку %TEMP% (короткий путь, меньше локов).
+        - retry x3, чистка tmp со снятием read-only.
+        - current_repo_id НЕ меняется — это делает UI после успеха.
         """
+        import tempfile
+        import time
         import git
+        from gmod.infrastructure.git.gitenv import ensure_git, rmtree_safe
+
+        if not ensure_git():
+            return {"status": "error",
+                    "message": "git.exe не найден. Установите Git for Windows "
+                               "или переустановите GMod (portable-git в комплекте)."}
         target = Path(target)
-        tmp = target.parent / f"{target.name}.gmod-tmp-{uuid.uuid4().hex[:8]}"
-        logger.info("clone_safe: %s -> %s (tmp %s)", url, target, tmp.name)
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            git.Repo.clone_from(url, str(tmp))
-            # Verify: валидный репозиторий с коммитами.
-            check = git.Repo(str(tmp))
-            if not list(check.iter_commits(max_count=1)):
-                raise RuntimeError("Клонирован пустой репозиторий без коммитов")
-            if target.exists():
-                raise RuntimeError(f"Целевая папка появилась во время clone: {target}")
-            shutil.move(str(tmp), str(target))
-            logger.info("clone_safe: готово %s", target)
-            return {"status": "success", "path": str(target)}
-        except Exception as e:
-            logger.error("clone_safe failed: %s", e)
+        tmp_base = Path(tempfile.gettempdir()) / "GModClone"
+        tmp_base.mkdir(parents=True, exist_ok=True)
+        last_error = ""
+        for attempt in range(1, retries + 1):
+            tmp = tmp_base / f"{target.name}.gmod-tmp-{uuid.uuid4().hex[:8]}"
+            logger.info("clone_safe: %s -> %s (tmp %s, попытка %d/%d)",
+                        url, target, tmp.name, attempt, retries)
             try:
-                if tmp.exists():
-                    shutil.rmtree(tmp, ignore_errors=True)
-            except Exception:
-                pass
-            return {"status": "error", "message": str(e)}
+                git.Repo.clone_from(url, str(tmp))
+                check = git.Repo(str(tmp))
+                if not list(check.iter_commits(max_count=1)):
+                    raise RuntimeError("Клонирован пустой репозиторий без коммитов")
+                # Закрываем хендлы перед move (Windows держит файлы).
+                del check
+                if target.exists():
+                    raise RuntimeError(f"Целевая папка появилась во время clone: {target}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(tmp), str(target))
+                logger.info("clone_safe: готово %s", target)
+                return {"status": "success", "path": str(target)}
+            except Exception as e:
+                last_error = str(e)
+                logger.warning("clone_safe попытка %d: %s", attempt, e)
+                rmtree_safe(tmp)
+                time.sleep(1.0 * attempt)
+        logger.error("clone_safe failed после %d попыток: %s", retries, last_error)
+        return {"status": "error", "message": last_error}
 
     def commits(self, repo_id: str, repo_path: str = "", limit: int = 100) -> list:
         """Коммиты репозитория."""

@@ -69,3 +69,6 @@ data/repos/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+
+# Vendored binaries (скачиваются tools/fetch_portable_git.ps1, не в git)
+vendor/portable-git/

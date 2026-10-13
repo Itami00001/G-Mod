@@ -27,7 +27,18 @@ def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     (DATA_DIR / "repos").mkdir(parents=True, exist_ok=True)
-    
+
+    # Git: системный или встроенный portable-git. Чистка stale tmp.
+    from gmod.infrastructure.git.gitenv import (
+        cleanup_stale_tmp, ensure_git,
+    )
+    import tempfile
+    _git_path = ensure_git()
+    if not _git_path:
+        logger.error("git.exe не найден: Git-операции будут недоступны")
+    cleanup_stale_tmp([str(DATA_DIR / "repos"),
+                       str(Path(tempfile.gettempdir()) / "GModClone")])
+
     logger.info("Starting GMod application")
     
     # Создание приложения Qt

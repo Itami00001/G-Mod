@@ -334,3 +334,42 @@ class BackupService:
                 logger.info("backup: ротация, удалён %s", old.name)
             except Exception as e:
                 logger.warning("backup: ротация не удалась: %s", e)
+
+    # ---------------- снапшот сессии (кнопка "Вернуть сессию") ----------------
+
+    @staticmethod
+    def snapshot_path() -> Path:
+        """Путь снапшота сессии (JSON, без секретов)."""
+        from gmod.config.constants import DATA_DIR
+        return DATA_DIR / "session_snapshot.json"
+
+    def save_session_snapshot(self, payload: Dict[str, Any]) -> str:
+        """Сохранить снапшот UI-сессии перед сбросом.
+
+        payload: {workspace, tabs, filters, chat_session_id, repo_id}.
+        Возвращает путь.
+        """
+        import json as _json
+        from gmod.config.constants import DATA_DIR
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        payload = dict(payload)
+        payload["saved_at"] = datetime.now().isoformat()
+        path = self.snapshot_path()
+        with open(path, "w", encoding="utf-8") as f:
+            _json.dump(payload, f, ensure_ascii=False, indent=2)
+        logger.info("snapshot saved: %s", path)
+        return str(path)
+
+    def load_session_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Прочитать снапшот сессии (None если нет)."""
+        import json as _json
+        path = self.snapshot_path()
+        try:
+            if not path.exists():
+                return None
+            with open(path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            return data if isinstance(data, dict) else None
+        except Exception as e:
+            logger.warning("snapshot load: %s", e)
+            return None

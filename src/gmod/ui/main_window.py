@@ -51,6 +51,21 @@ class MainWindow(QMainWindow):
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self._persist_workspace)
         self._autosave_timer.start(60000)
+        # Git обязателен для клонирования/коммитов/diff.
+        QTimer.singleShot(2000, self._check_git_available)
+
+    def _check_git_available(self) -> None:
+        """Предупреждение, если git.exe не найден (portable-git в комплекте)."""
+        try:
+            from gmod.infrastructure.git.gitenv import ensure_git
+            if not ensure_git():
+                QMessageBox.warning(
+                    self, "Git не найден",
+                    "git.exe не найден: клонирование и анализ истории "
+                    "недоступны.\nУстановите Git for Windows или переустановите "
+                    "GMod (portable-git входит в установщик).")
+        except Exception as e:
+            logger.debug("git check: %s", e)
 
     # ============ Workspace persistence (ТЗ §11-16) ============
 
@@ -3499,6 +3514,11 @@ class MainWindow(QMainWindow):
         reset_action = QAction("Сбросить рабочую область", self)
         reset_action.triggered.connect(self._on_reset_workspace)
         gear_menu.addAction(reset_action)
+
+        # Вернуть сессию (снапшот вида до сброса)
+        restore_action = QAction("Вернуть сессию", self)
+        restore_action.triggered.connect(self._on_restore_session)
+        gear_menu.addAction(restore_action)
         
         gear_menu.addSeparator()
         
@@ -5649,11 +5669,12 @@ class MainWindow(QMainWindow):
             logger.error(f"GMod endpoint error: {e}")
     
     def _on_reset_workspace(self) -> None:
-        """Сброс workspace по pipeline ТЗ §17: backup -> verify -> reset.
+        """Полный сброс вида «как при первом запуске».
 
-        Сбрасывается только workspace/UI state; repository, metrics,
-        reports НЕ трогаем (ТЗ §21). Без валидного backup reset
-        НЕ выполняется (ТЗ §22).
+        Очищаются: таблица метрик, список отчётов, дерево файлов, граф,
+        current_repo_id=None, показывается Git URL, закрыты все вкладки
+        кроме «Чат». ЧАТ НЕ ТРОГАЕМ. БД (репозитории/метрики/отчёты) цела.
+        Перед сбросом — backup ZIP + снапшот сессии для «Вернуть сессию».
         """
         from gmod.config.constants import (
             DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT,
@@ -5663,16 +5684,22 @@ class MainWindow(QMainWindow):
 
         reply = QMessageBox.question(
             self, "Сброс рабочей области",
-            "Перед сбросом будет создана резервная копия (ZIP).\n"
-            "Сбросить геометрию, вкладки, шторки и тему?\n"
-            "(Репозиторий, метрики и отчёты сохранятся.)",
+            "Перед сбросом будет создана резервная копия (ZIP) и снапшот сессии.\n"
+            "Экран станет как при первом запуске: метрики/отчёты очищены,\n"
+            "репозиторий отключён, открыта только вкладка «Чат».\n"
+            "(Данные в БД сохранятся, чат не тронется.)",
             QMessageBox.Yes | QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
         try:
-            # Flush pending changes.
+            # Flush pending changes + снапшот сессии ДО сброса.
             self._persist_workspace()
+            try:
+                BackupService(db=self.db).save_session_snapshot(
+                    self._collect_session_snapshot())
+            except Exception as e:
+                logger.warning("snapshot: %s", e)
             self.status_bar.showMessage("Создание резервной копии...")
             QApplication.processEvents()
             result = BackupService(db=self.db).reset_workspace(
@@ -5684,14 +5711,14 @@ class MainWindow(QMainWindow):
                     "Рабочая область не была сброшена.")
                 self.status_bar.showMessage("Сброс отменён: нет резервной копии")
                 return
-            # Recreate UI defaults + reload workspace.
+            # --- Чистый вид: геометрия/шторки/тема ---
             self.resize(DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
             self.left_dock.setMinimumWidth(DEFAULT_LEFT_DOCK_WIDTH)
             self.right_dock.setMinimumWidth(DEFAULT_RIGHT_DOCK_WIDTH)
             self.left_dock.setVisible(True)
             self.right_dock.setVisible(True)
             self._set_theme("dark")
-            # ТЗ §6: reset tabs/filters/selections/settings.
+            # --- Вкладки: только «Чат» ---
             try:
                 for i in range(self.central_tabs.count() - 1, -1, -1):
                     if self.central_tabs.tabText(i) != "Чат":
@@ -5700,6 +5727,7 @@ class MainWindow(QMainWindow):
                 self.central_tabs.setCurrentIndex(0)
             except Exception:
                 pass
+            # --- Фильтры и выборы ---
             try:
                 self.metrics_file_filter.setCurrentIndex(0)
                 self.metrics_type_filter.setCurrentText("Все")
@@ -5716,36 +5744,167 @@ class MainWindow(QMainWindow):
                 self._update_compare_button()
             except Exception:
                 pass
+            # --- Очистка виджетов данных (БД не трогаем) ---
             try:
-                if hasattr(self, "repo_tabs"):
-                    self.repo_tabs.setCurrentIndex(0)
+                self.metrics_model.removeRows(0, self.metrics_model.rowCount())
+            except Exception:
+                pass
+            try:
+                self.metrics_status.setText(
+                    "Метрики не загружены. Загрузите репозиторий.")
+            except Exception:
+                pass
+            try:
+                self.reports_list.clear()
+                self.report_view.clear()
+                self.report_meta.clear()
+                self.report_verdict.clear()
+            except Exception:
+                pass
+            try:
+                from PySide6.QtGui import QStandardItemModel
+                self.files_tree.setModel(QStandardItemModel())
+            except Exception:
+                pass
+            try:
+                self._graph_data = None
+                self._graph_nodes = []
+                if hasattr(self, "graph_plot"):
+                    self.graph_plot.clear()
+                if hasattr(self, "graph_node_info"):
+                    self.graph_node_info.clear()
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "forecast_label"):
+                    self.forecast_label.setText("Прогноз появится здесь")
+            except Exception:
+                pass
+            # --- Репозиторий отключён, показать Git URL. Чат цел. ---
+            try:
+                self.db.save_workspace_state("current_repo_id", "")
+                self.workspace_service.save_state(repository_id="")
+            except Exception:
+                pass
+            try:
+                self._set_repo_state("NO_REPOSITORY", "")
+                self.url_input.clear()
             except Exception:
                 pass
             self._save_tabs_state()
-            # Reload repository + workspace views.
-            try:
-                repo_id = self._get_current_repo_id()
-                repo_path = self._get_repo_path(repo_id) if repo_id else None
-                if repo_id and repo_path:
-                    from pathlib import Path as _Path
-                    from gmod.domain.entities import Repository as _Repo
-                    from gmod.infrastructure.git.git_parser import GitParser as _GP
-                    _repo = _GP().open_repository(_Path(repo_path))
-                    self._populate_repo_dock(_repo)
-                    self._refresh_metrics()
-                    self._refresh_graph()
-                    self._refresh_reports()
-            except Exception as e:
-                logger.debug("reset reload: %s", e)
             self.status_bar.showMessage(
                 f"Рабочая область сброшена. Backup: {result.get('backup', '')}")
             QMessageBox.information(
                 self, "Готово",
-                f"Рабочая область сброшена.\nРезервная копия:\n{result.get('backup', '')}")
+                "Как при первом запуске: таблицы очищены, репозиторий отключён.\n"
+                f"Резервная копия:\n{result.get('backup', '')}\n"
+                "Вернуть вид можно кнопкой «Вернуть сессию» в меню ⚙.")
             logger.info("workspace reset done, backup=%s", result.get("backup"))
         except Exception as e:
             logger.error(f"Error resetting workspace: {e}", exc_info=True)
             QMessageBox.critical(self, "Ошибка", f"Не удалось сбросить: {e}")
+
+    def _collect_session_snapshot(self) -> dict:
+        """Снапшот UI-сессии: workspace, tabs, filters, chat_session_id, repo_id."""
+        snapshot = {"repo_id": self._get_current_repo_id() or "",
+                    "chat_session_id": getattr(self, "_chat_session_id", "") or ""}
+        try:
+            snapshot["workspace"] = self.db.get_workspace("default") or {}
+        except Exception:
+            snapshot["workspace"] = {}
+        try:
+            snapshot["tabs"] = self.db.get_workspace_tabs("default") or []
+        except Exception:
+            snapshot["tabs"] = []
+        try:
+            snapshot["filters"] = {
+                "metrics_file": self.metrics_file_filter.currentText(),
+                "metrics_type": self.metrics_type_filter.currentText(),
+                "metrics_name": self.metrics_name_filter.currentText(),
+                "metrics_search": self.metrics_search.text(),
+                "func_paths": [self.func_paths_list.item(i).text()
+                               for i in range(self.func_paths_list.count())],
+            }
+        except Exception:
+            snapshot["filters"] = {}
+        return snapshot
+
+    def _on_restore_session(self) -> None:
+        """Вернуть сессию 1:1 из снапшота (рядом со «Сбросить», меню ⚙)."""
+        from gmod.services.backup_service import BackupService
+        try:
+            snapshot = BackupService(db=self.db).load_session_snapshot()
+        except Exception as e:
+            QMessageBox.warning(self, "Вернуть сессию", f"Не удалось прочитать снапшот: {e}")
+            return
+        if not snapshot:
+            QMessageBox.information(self, "Вернуть сессию",
+                                    "Снапшот сессии не найден. Сначала выполните «Сбросить рабочую область».")
+            return
+        try:
+            repo_id = snapshot.get("repo_id", "")
+            if repo_id:
+                self.db.save_workspace_state("current_repo_id", repo_id)
+                try:
+                    self.workspace_service.save_state(repository_id=repo_id)
+                except Exception:
+                    pass
+            # Вкладки из снапшота.
+            try:
+                tabs = snapshot.get("tabs", [])
+                wanted = [t.get("tab_key") for t in tabs if t.get("is_open")]
+                active = (snapshot.get("workspace", {}) or {}).get("active_tab", "Чат")
+                for name in wanted:
+                    if name and name != "Чат":
+                        self._ensure_tab(name)
+                if active:
+                    self._switch_to_tab(active)
+            except Exception as e:
+                logger.debug("restore tabs: %s", e)
+            # Фильтры.
+            try:
+                filters = snapshot.get("filters", {}) or {}
+                if filters.get("metrics_file"):
+                    self.metrics_file_filter.setCurrentText(filters["metrics_file"])
+                if filters.get("metrics_type"):
+                    self.metrics_type_filter.setCurrentText(filters["metrics_type"])
+                if filters.get("metrics_name"):
+                    self.metrics_name_filter.setCurrentText(filters["metrics_name"])
+                self.metrics_search.setText(filters.get("metrics_search", ""))
+                self.func_paths_list.clear()
+                for path in filters.get("func_paths", []) or []:
+                    self.func_paths_list.addItem(path)
+            except Exception as e:
+                logger.debug("restore filters: %s", e)
+            # Репозиторий и данные.
+            try:
+                if repo_id:
+                    repo_path = self._get_repo_path(repo_id)
+                    if repo_path:
+                        from pathlib import Path as _Path
+                        from gmod.infrastructure.git.git_parser import GitParser as _GP
+                        _repo = _GP().open_repository(_Path(repo_path))
+                        self._populate_repo_dock(_repo)
+                        self._set_repo_state("ACTIVE", repo_id)
+                self._refresh_metrics()
+                self._refresh_graph()
+                self._refresh_reports()
+            except Exception as e:
+                logger.debug("restore repo views: %s", e)
+            # Чат-сессия (чат не удалялся, просто выбираем).
+            try:
+                session_id = snapshot.get("chat_session_id", "")
+                if session_id and self.db.get_chat_session(session_id):
+                    self._chat_session_id = session_id
+                    self._render_chat_cards(session_id)
+                    self._refresh_chat_sessions(session_id)
+            except Exception as e:
+                logger.debug("restore chat: %s", e)
+            self.status_bar.showMessage("Сессия восстановлена 1:1")
+            logger.info("session restored from snapshot")
+        except Exception as e:
+            logger.error("restore session: %s", e, exc_info=True)
+            QMessageBox.critical(self, "Ошибка", f"Не удалось вернуть сессию: {e}")
 
     def _on_about(self) -> None:
         """Диалог 'О программе' (prompt4 п.9)."""

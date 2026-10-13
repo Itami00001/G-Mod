@@ -35,6 +35,9 @@ Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescrip
 
 [Files]
 Source: "dist\GMod\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Portable Git (~50 МБ): получить через tools\fetch_portable_git.ps1 перед сборкой.
+; skipifsourcedoesntexist — сборка не падает, если vendor не скачан.
+Source: "vendor\portable-git\*"; DestDir: "{app}\portable-git"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
