@@ -17,6 +17,7 @@ from gmod.config.constants import (
     DEFAULT_MESSAGE_LIMIT, DEFAULT_TEMPERATURE, DEFAULT_MAX_TOKENS,
     DEFAULT_LOG_LEVEL,
     DEFAULT_OLLAMA_URL, DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_CLOUD_URL, DEFAULT_OLLAMA_CLOUD_MODEL,
     DEFAULT_GROQ_MODEL,
     DEFAULT_GEMINI_MODEL,
 )
@@ -68,21 +69,53 @@ class Settings:
     @property
     def ollama_url(self) -> str:
         for p in self.llm_providers:
-            if p.get("name") == "ollama":
+            if p.get("name") in ("ollama_local", "ollama"):
                 return p.get("url", "http://localhost:11434")
         return "http://localhost:11434"
 
     @property
     def ollama_model(self) -> str:
         for p in self.llm_providers:
-            if p.get("name") == "ollama":
+            if p.get("name") in ("ollama_local", "ollama"):
                 return p.get("model", "llama3.2:3b")
         return "llama3.2:3b"
 
     @property
     def ollama_api_key(self) -> str:
-        """API ключ Ollama Cloud: keyring -> env -> legacy YAML (ТЗ §4.2)."""
+        """Legacy-алиас: ключ секции ollama (мигрирует в ollama_cloud)."""
         return self._resolve_key("ollama")
+
+    @property
+    def ollama_cloud_url(self) -> str:
+        for p in self.llm_providers:
+            if p.get("name") == "ollama_cloud":
+                return p.get("url", DEFAULT_OLLAMA_CLOUD_URL)
+        # Legacy одна секция с cloud-URL.
+        for p in self.llm_providers:
+            if p.get("name") == "ollama":
+                url = p.get("url", "")
+                if url and url.rstrip("/").lower() not in (
+                        "http://localhost:11434", "http://127.0.0.1:11434"):
+                    return url
+        return DEFAULT_OLLAMA_CLOUD_URL
+
+    @property
+    def ollama_cloud_model(self) -> str:
+        for p in self.llm_providers:
+            if p.get("name") == "ollama_cloud":
+                return p.get("model", DEFAULT_OLLAMA_CLOUD_MODEL)
+        for p in self.llm_providers:
+            if p.get("name") == "ollama":
+                url = p.get("url", "")
+                if url and url.rstrip("/").lower() not in (
+                        "http://localhost:11434", "http://127.0.0.1:11434"):
+                    return p.get("model", DEFAULT_OLLAMA_CLOUD_MODEL)
+        return DEFAULT_OLLAMA_CLOUD_MODEL
+
+    @property
+    def ollama_cloud_api_key(self) -> str:
+        """Ключ Ollama Cloud: keyring -> env -> legacy YAML."""
+        return self._resolve_key("ollama_cloud")
 
     @property
     def groq_api_key(self) -> str:
@@ -111,6 +144,15 @@ class Settings:
             if p.get("name") == account:
                 yaml_key = p.get("api_key", "") or ""
                 break
+        if not yaml_key and account == "ollama_cloud":
+            # Legacy: одна секция ollama с cloud-URL и ключом.
+            for p in self.llm_providers:
+                if p.get("name") == "ollama":
+                    url = p.get("url", "")
+                    if url and url.rstrip("/").lower() not in (
+                            "http://localhost:11434", "http://127.0.0.1:11434"):
+                        yaml_key = p.get("api_key", "") or ""
+                    break
         try:
             from gmod.infrastructure.credentials.credential_service import (
                 get_credential_service,
@@ -126,6 +168,14 @@ class Settings:
             if p.get("name") == account:
                 yaml_key = p.get("api_key", "") or ""
                 break
+        if not yaml_key and account == "ollama_cloud":
+            for p in self.llm_providers:
+                if p.get("name") == "ollama":
+                    url = p.get("url", "")
+                    if url and url.rstrip("/").lower() not in (
+                            "http://localhost:11434", "http://127.0.0.1:11434"):
+                        yaml_key = p.get("api_key", "") or ""
+                    break
         try:
             from gmod.infrastructure.credentials.credential_service import (
                 get_credential_service,
@@ -268,9 +318,30 @@ class Settings:
             seen.add(name)
 
             if name == "ollama":
+                # Legacy одна секция: localhost -> Local, иначе -> Cloud.
+                url = p.get("url", DEFAULT_OLLAMA_URL)
+                is_local = url.rstrip("/").lower() in (
+                    "http://localhost:11434", "http://127.0.0.1:11434")
+                if is_local:
+                    entry["name"] = "ollama_local"
+                    entry["url"] = url
+                    entry["model"] = p.get("model", DEFAULT_OLLAMA_MODEL)
+                    entry["api_key"] = ""
+                    seen.add("ollama_local")
+                else:
+                    entry["name"] = "ollama_cloud"
+                    entry["url"] = url
+                    entry["model"] = p.get("model", DEFAULT_OLLAMA_CLOUD_MODEL)
+                    entry["api_key"] = _key("ollama_cloud", p.get("api_key", "") or "")
+                    seen.add("ollama_cloud")
+            elif name == "ollama_local":
                 entry["url"] = p.get("url", DEFAULT_OLLAMA_URL)
                 entry["model"] = p.get("model", DEFAULT_OLLAMA_MODEL)
-                entry["api_key"] = _key("ollama", p.get("api_key", "") or "")
+                entry["api_key"] = ""
+            elif name == "ollama_cloud":
+                entry["url"] = p.get("url", DEFAULT_OLLAMA_CLOUD_URL)
+                entry["model"] = p.get("model", DEFAULT_OLLAMA_CLOUD_MODEL)
+                entry["api_key"] = _key("ollama_cloud", p.get("api_key", "") or "")
             elif name == "groq":
                 entry["api_key"] = _key("groq", p.get("api_key", "") or "")
                 entry["model"] = p.get("model", DEFAULT_GROQ_MODEL)

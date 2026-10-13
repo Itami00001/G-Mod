@@ -30,6 +30,9 @@ class LLMProviderConfig:
         name = (name or "").lower()
         defaults = {
             "ollama": ("Ollama", "http://localhost:11434", "none", "ollama"),
+            "ollama_local": ("Ollama Local", "http://localhost:11434", "none", ""),
+            "ollama_cloud": ("Ollama Cloud", "https://ollama.com", "bearer",
+                             "ollama_cloud"),
             "groq": ("Groq", "https://api.groq.com/openai/v1", "bearer", "groq"),
             "gemini": ("Gemini", "https://generativelanguage.googleapis.com/v1beta",
                        "query_key", "gemini"),

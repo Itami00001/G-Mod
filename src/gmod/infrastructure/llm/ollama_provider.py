@@ -1,7 +1,11 @@
-"""Ollama провайдер для LLM."""
+"""Ollama провайдеры: Local (без ключа) и Cloud (OpenAI-совместимый, ключ обязателен).
+
+Разделение по требованию: ключ работает только для Cloud; локальный
+режим ключ игнорирует (предупреждение в лог).
+"""
 
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 try:
     import litellm
@@ -9,50 +13,57 @@ try:
 except Exception as _litellm_import_error:  # noqa: BLE001 — в frozen-exe tiktoken падает с ValueError
     litellm = None  # type: ignore
     LITELLM_AVAILABLE = False
-    logging.warning("litellm not available, Ollama provider will not work: %s", _litellm_import_error)
+    logging.warning("litellm not available: %s", _litellm_import_error)
 
 from gmod.infrastructure.llm.base import BaseLLMProvider
 
 logger = logging.getLogger(__name__)
 
+LOCAL_URLS = {"http://localhost:11434", "http://127.0.0.1:11434"}
+
+
+def _map_http_status(status_code: int, what: str = ""):
+    """Статус HTTP-кода через единую таблицу (401/403/429/404)."""
+    from gmod.infrastructure.llm.health import (
+        HTTP_STATUS_TABLE, ProviderStatus,
+    )
+    if status_code in HTTP_STATUS_TABLE:
+        reason, msg = HTTP_STATUS_TABLE[status_code]
+        if status_code == 404 and what:
+            msg = f"{msg}: '{what}'"
+        return ProviderStatus(False, msg, reason, f"HTTP {status_code}")
+    return ProviderStatus(
+        False, f"⚠ Соединение отсутствует. HTTP {status_code}",
+        "no_connection", f"HTTP {status_code}",
+    )
+
 
 class OllamaProvider(BaseLLMProvider):
-    """Провайдер Ollama для локальных LLM."""
+    """Ollama Local: только localhost, БЕЗ ключа.
 
-    auth_type = "bearer"  # Ollama Cloud; для local ключ не шлём (см. _auth_headers)
+    Переданный ключ игнорируется (warning в лог) — для облака
+    используйте OllamaCloudProvider.
+    """
 
-    def _auth_headers(self) -> Dict[str, str]:
-        """Единая авторизация (ТЗ §3.3): local — без ключа, cloud — Bearer.
+    auth_type = "none"
 
-        Применяется ко ВСЕМ запросам: /api/tags, /api/chat, /api/generate.
-        """
-        if getattr(self, "_local_mode", True):
-            return {}
-        return super()._auth_headers()
-    
     def __init__(self, api_key: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
-        """Инициализация Ollama провайдера.
+        """Инициализация локального провайдера.
 
         Args:
-            api_key: API ключ для Ollama Cloud (для локального сервера не нужен,
-                можно оставить пустым). Хранится в config.yaml: llm.providers[].api_key
+            api_key: Игнорируется (локальный режим без ключа)
             config: Конфигурация с url и model
         """
-        super().__init__(api_key, config)
+        super().__init__(None, config)
         self.url = config.get("url", "http://localhost:11434") if config else "http://localhost:11434"
         self.model = config.get("model", "llama3.2:3b") if config else "llama3.2:3b"
-        self._local_mode = self.url.rstrip('/').lower() in {
-            "http://localhost:11434", "http://127.0.0.1:11434",
-        }
-        # api_key может прийти как в config, так и отдельным параметром
-        if config and config.get("api_key") and not self.api_key:
-            self.api_key = config.get("api_key")
-        if self.api_key:
-            logger.info("Ollama: API ключ задан (длина %d), будет передан как Bearer", len(self.api_key))
-        else:
-            logger.debug("Ollama: API ключ не задан (локальный режим без ключа)")
+        if api_key or (config and config.get("api_key")):
+            logger.warning("Ollama Local: API-ключ игнорируется (localhost без ключа)")
+        if self.url.rstrip("/").lower() not in LOCAL_URLS:
+            logger.warning("Ollama Local: не-localhost URL %s — для облака нужен OllamaCloud",
+                           self.url)
         self._validate_config()
-    
+
     def _validate_config(self, required_keys: list = None) -> bool:
         """Валидация конфигурации (совместима с BaseLLMProvider)."""
         if not self.url:
@@ -61,20 +72,17 @@ class OllamaProvider(BaseLLMProvider):
         if required_keys:
             return super()._validate_config(required_keys)
         return True
-    
-    def generate(self, prompt: str, **kwargs) -> str:
-        """Генерация ответа через Ollama.
 
-        По умолчанию — напрямую через нативный HTTP API (/api/chat),
-        БЕЗ litellm: litellm пытается считать токены через tiktoken
-        (кодировка cl100k_base) и падает с "Unknown encoding cl100k_base"
-        ещё до сетевого запроса — чат при запущенной Ollama не работает.
-        Нативный путь этот класс ошибок исключает полностью.
-        litellm остаётся опцией: config {"use_litellm": True}.
+    def _auth_headers(self) -> Dict[str, str]:
+        """Локальный режим: заголовков авторизации нет."""
+        return {}
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        """Генерация через нативный HTTP API (POST /api/chat), БЕЗ litellm.
 
         Args:
             prompt: Промпт для генерации
-            **kwargs: Дополнительные параметры (temperature, max_tokens, etc.)
+            **kwargs: temperature, max_tokens, timeout
 
         Returns:
             Сгенерированный текст
@@ -92,9 +100,6 @@ class OllamaProvider(BaseLLMProvider):
         temperature = extra.pop("temperature", 0.7)
         max_tokens = extra.pop("max_tokens", 2000)
         timeout = extra.pop("timeout", 180)
-        headers = {}
-        if self.api_key and not self._local_mode:
-            headers["Authorization"] = f"Bearer {self.api_key}"
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
@@ -102,14 +107,14 @@ class OllamaProvider(BaseLLMProvider):
             "options": {"temperature": temperature, "num_predict": max_tokens},
         }
         logger.info(
-            "Ollama: native generate model=%s url=%s prompt_len=%d",
+            "Ollama Local: generate model=%s url=%s prompt_len=%d",
             self.model, self.url, len(prompt),
         )
         try:
             response = requests.post(
                 f"{self.url.rstrip('/')}/api/chat",
                 json=payload,
-                headers=headers,
+                headers={},
                 timeout=timeout,
             )
         except Exception as e:
@@ -134,11 +139,8 @@ class OllamaProvider(BaseLLMProvider):
         """Генерация через litellm (опция use_litellm=True)."""
         if not LITELLM_AVAILABLE:
             raise RuntimeError("litellm not available, cannot use Ollama provider")
-        
+
         try:
-            # Извлекаем известные параметры, остальные пробрасываем как есть.
-            # (Прямой **kwargs после явных temperature/max_tokens давал бы
-            # TypeError при дублировании ключей.)
             extra = dict(kwargs)
             temperature = extra.pop("temperature", 0.7)
             max_tokens = extra.pop("max_tokens", 2000)
@@ -149,9 +151,6 @@ class OllamaProvider(BaseLLMProvider):
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            # Ollama Cloud требует Bearer-ключ; локальному серверу он не мешает.
-            if self.api_key and not self._local_mode:
-                completion_kwargs["api_key"] = self.api_key
             logger.info(
                 "Ollama: generate model=%s url=%s prompt_len=%d",
                 self.model, self.url, len(prompt),
@@ -161,50 +160,39 @@ class OllamaProvider(BaseLLMProvider):
             content = response["choices"][0]["message"]["content"]
             logger.info("Ollama: ответ получен (длина %d)", len(content or ""))
             return content
-            
+
         except Exception as e:
             logger.error(f"Ollama generation error: {e}")
             raise
-    
-    def is_available(self) -> bool:
-        """Проверка доступности Ollama (сервер отвечает на /api/tags).
 
-        litellm для проверки не нужен — используется прямой HTTP-запрос.
-        """
+    def is_available(self) -> bool:
+        """Сервер отвечает на /api/tags (без litellm)."""
         try:
             import requests
-            headers = self._auth_headers()
-            response = requests.get(f"{self.url}/api/tags", timeout=5, headers=headers)
+            response = requests.get(f"{self.url}/api/tags", timeout=5)
             ok = response.status_code == 200
             if ok:
-                logger.info("Ollama: доступна (%s, модель %s)", self.url, self.model)
+                logger.info("Ollama Local: доступна (%s, модель %s)", self.url, self.model)
             else:
-                logger.warning("Ollama: недоступна, HTTP %s", response.status_code)
+                logger.warning("Ollama Local: недоступна, HTTP %s", response.status_code)
             return ok
         except Exception as e:
             logger.warning(f"Ollama not available at {self.url}: {e}")
             return False
 
     def check_connection(self):
-        """Лёгкая проверка: сервер + модель (без generation prompt, ТЗ §6).
-
-        Returns:
-            ProviderStatus.
-        """
+        """Лёгкая проверка: сервер + модель (без generation, с таблицей кодов)."""
         from gmod.infrastructure.llm.health import (
-            MSG_OK, ProviderStatus, classify_exception,
+            MSG_NO_LIB, MSG_OK, ProviderStatus, classify_exception,
         )
 
         use_litellm = bool(self.config.get("use_litellm", False)) if self.config else False
         if use_litellm and not LITELLM_AVAILABLE:
-            from gmod.infrastructure.llm.health import MSG_NO_LIB
             return ProviderStatus(False, MSG_NO_LIB, "no_lib", "litellm not installed")
         try:
             import requests
-            resp = requests.get(f"{self.url}/api/tags", timeout=5,
-                                headers=self._auth_headers())
+            resp = requests.get(f"{self.url}/api/tags", timeout=5)
             if resp.status_code == 200:
-                # Сервер жив — проверяем, установлена ли нужная модель.
                 try:
                     names = [m.get("name", "") for m in resp.json().get("models", [])]
                 except Exception:
@@ -215,16 +203,9 @@ class OllamaProvider(BaseLLMProvider):
                             f"Выполните: ollama pull {self.model}")
                     logger.warning("Ollama: %s (установлены: %s)", hint, names)
                     return ProviderStatus(False, hint, "model_missing", f"have={names}")
-                logger.info("Ollama: проверка соединения — OK")
+                logger.info("Ollama Local: проверка соединения — OK")
                 return ProviderStatus(True, MSG_OK, "ok", f"HTTP 200, {self.url}")
-            if resp.status_code in (401, 403):
-                from gmod.infrastructure.llm.health import MSG_BAD_KEY
-                logger.warning("Ollama: API ключ не валидный (HTTP %s)", resp.status_code)
-                return ProviderStatus(False, MSG_BAD_KEY, "bad_key", f"HTTP {resp.status_code}")
-            return ProviderStatus(
-                False, f"⚠ Соединение отсутствует. HTTP {resp.status_code}",
-                "no_connection", f"HTTP {resp.status_code}",
-            )
+            return _map_http_status(resp.status_code)
         except Exception as e:
             reason, msg = classify_exception(e)
             return ProviderStatus(False, msg, reason, str(e)[:300])
@@ -234,19 +215,13 @@ class OllamaProvider(BaseLLMProvider):
         return self.check_connection()
 
     def validate_credentials(self):
-        """Local — ключ не нужен; Cloud — ключ обязателен (ТЗ §3.3)."""
-        from gmod.infrastructure.llm.health import (
-            MSG_NO_KEY, MSG_OK, ProviderStatus,
-        )
-        if getattr(self, "_local_mode", True):
-            return ProviderStatus(True, MSG_OK, "ok", "local, no key required")
-        if not (self.api_key or "").strip():
-            return ProviderStatus(False, MSG_NO_KEY, "no_key", "cloud needs key")
-        return ProviderStatus(True, MSG_OK, "ok", "key present")
+        """Local: ключ не нужен и игнорируется."""
+        from gmod.infrastructure.llm.health import MSG_OK, ProviderStatus
+        return ProviderStatus(True, MSG_OK, "ok", "local, no key required")
 
     def test_inference(self, prompt: str = "Ответь одним словом: тест.") -> str:
-        """Явный тестовый inference (ТЗ §6: отдельная операция)."""
-        logger.info("Ollama: тестовый inference (модель %s)", self.model)
+        """Явный тестовый inference (отдельная операция)."""
+        logger.info("Ollama Local: тестовый inference (модель %s)", self.model)
         return self.generate(prompt, max_tokens=50, temperature=0.0)
 
     def _model_installed(self, server_models: list) -> bool:
@@ -260,17 +235,134 @@ class OllamaProvider(BaseLLMProvider):
         return any(m == base or m.split(":")[0] == base for m in server_models)
 
     def list_models(self) -> list:
-        """Список моделей Ollama (GET /api/tags, с единой авторизацией, ТЗ §3.3)."""
+        """Список моделей (GET /api/tags)."""
         import requests
-        resp = requests.get(f"{self.url}/api/tags", timeout=5,
-                            headers=self._auth_headers())
+        resp = requests.get(f"{self.url}/api/tags", timeout=5)
         resp.raise_for_status()
         return [m["name"] for m in resp.json().get("models", []) if m.get("name")]
 
     def get_available_models(self) -> list:
-        """Получение списка доступных моделей (алиас list_models)."""
+        """Алиас list_models."""
         try:
             return self.list_models()
         except Exception as e:
             logger.error(f"Error getting Ollama models: {e}")
             return []
+
+
+class OllamaCloudProvider(BaseLLMProvider):
+    """Ollama Cloud: OpenAI-совместимый endpoint, ключ ОБЯЗАТЕЛЕН.
+
+    Базовый URL задаётся пользователем (по умолчанию https://ollama.com —
+    проверьте по актуальным докам Ollama Cloud!). Транспорт — litellm
+    в OpenAI-совместимом режиме.
+    """
+
+    auth_type = "bearer"
+
+    def __init__(self, api_key: Optional[str] = None, config: Optional[Dict[str, Any]] = None):
+        """Инициализация облачного провайдера.
+
+        Args:
+            api_key: Bearer-ключ Ollama Cloud (обязателен)
+            config: url (base endpoint), model
+        """
+        super().__init__(api_key, config)
+        self.url = (config.get("url") or "https://ollama.com") if config else "https://ollama.com"
+        self.model = (config.get("model") or "llama3.2:3b") if config else "llama3.2:3b"
+        if config and config.get("api_key") and not self.api_key:
+            self.api_key = config.get("api_key")
+        if not self.api_key:
+            logger.warning("Ollama Cloud: API-ключ обязателен, но не задан")
+
+    def _models_url(self) -> str:
+        return f"{self.url.rstrip('/')}/models"
+
+    def generate(self, prompt: str, **kwargs) -> str:
+        """Генерация через OpenAI-совместимый endpoint (litellm)."""
+        if not LITELLM_AVAILABLE:
+            raise RuntimeError("litellm not available, cannot use Ollama Cloud")
+        if not (self.api_key or "").strip():
+            raise ValueError("Ollama Cloud: API-ключ обязателен")
+        try:
+            extra = dict(kwargs)
+            temperature = extra.pop("temperature", 0.7)
+            max_tokens = extra.pop("max_tokens", 2000)
+            timeout = extra.pop("timeout", 60)
+            response = litellm.completion(
+                model=f"openai/{self.model}",
+                messages=[{"role": "user", "content": prompt}],
+                api_base=self.url,
+                api_key=self.api_key,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                **extra,
+            )
+            content = response["choices"][0]["message"]["content"] or ""
+            if not content:
+                raise RuntimeError("Ollama Cloud вернул пустой ответ")
+            logger.info("Ollama Cloud: ответ получен (длина %d)", len(content))
+            return content
+        except Exception as e:
+            logger.error(f"Ollama Cloud generation error: {e}")
+            raise
+
+    def list_models(self) -> List[str]:
+        """Список моделей (GET /models с Bearer, ТЗ §3.3)."""
+        import requests
+        resp = requests.get(self._models_url(), headers=self._auth_headers(), timeout=10)
+        if resp.status_code in (401, 403, 429):
+            raise RuntimeError(_map_http_status(resp.status_code).message)
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("data", data.get("models", []))
+        return sorted(m.get("id", m.get("name", "")) for m in items if m.get("id") or m.get("name"))
+
+    def check_connection(self):
+        """Сервер + ключ + модель (без generation)."""
+        from gmod.infrastructure.llm.health import (
+            MSG_NO_LIB, ProviderStatus, classify_exception,
+        )
+        if not LITELLM_AVAILABLE:
+            return ProviderStatus(False, MSG_NO_LIB, "no_lib", "litellm not installed")
+        cred = self.validate_credentials()
+        if not cred.ok:
+            return cred
+        try:
+            names = self.list_models()
+        except Exception as e:
+            reason, msg = classify_exception(e)
+            return ProviderStatus(False, msg, reason, str(e)[:300])
+        from gmod.infrastructure.llm.health import MSG_OK
+        short = self.model.split("/")[-1]
+        if names and self.model not in names and short not in names:
+            from gmod.infrastructure.llm.health import MSG_MODEL_MISSING
+            return ProviderStatus(False, f"{MSG_MODEL_MISSING}: '{self.model}'",
+                                  "model_missing", f"have={len(names)}")
+        logger.info("Ollama Cloud: проверка соединения — OK")
+        return ProviderStatus(True, MSG_OK, "ok", f"model={self.model}")
+
+    def check_status(self):
+        """Алиас check_connection для совместимости."""
+        return self.check_connection()
+
+    def validate_credentials(self):
+        """Ключ обязателен (без сети — только формат)."""
+        from gmod.infrastructure.llm.health import (
+            MSG_NO_KEY, MSG_OK, ProviderStatus,
+        )
+        if not (self.api_key or "").strip():
+            return ProviderStatus(False, MSG_NO_KEY, "no_key", "cloud needs key")
+        return ProviderStatus(True, MSG_OK, "ok", "key present")
+
+    def test_inference(self, prompt: str = "Ответь одним словом: тест.") -> str:
+        """Явный тестовый inference (отдельная операция)."""
+        logger.info("Ollama Cloud: тестовый inference (модель %s)", self.model)
+        return self.generate(prompt, max_tokens=50, temperature=0.0)
+
+    def is_available(self) -> bool:
+        try:
+            return self.check_connection().ok
+        except Exception:
+            return False

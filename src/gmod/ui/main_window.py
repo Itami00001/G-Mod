@@ -1329,34 +1329,53 @@ class MainWindow(QMainWindow):
 
         return chat_tab
     
+    # Display-имена провайдеров в чате (id -> подпись).
+    PROVIDER_DISPLAY = {
+        "ollama_local": "Ollama Local",
+        "ollama_cloud": "Ollama Cloud",
+        "groq": "Groq",
+        "gemini": "Gemini",
+        "openai": "OpenAI",
+        "anthropic": "Anthropic",
+    }
+
+    @staticmethod
+    def _provider_id(display_name: str) -> str:
+        """Display-имя чата -> машинный id (Ollama Local -> ollama_local)."""
+        text = (display_name or "").strip().lower().replace(" ", "_")
+        aliases = {"ollama": "ollama_local"}
+        return aliases.get(text, text)
+
     def _load_llm_settings(self) -> None:
         """Загрузка настроек LLM из конфигурации."""
         try:
             settings = get_settings()
             llm_config = settings.build_llm_config()
-            
+
             # Заполняем провайдеров
             self.provider_combo.clear()
             self.provider_model_map = {}
-            
+
             for provider_config in llm_config.get("llm", {}).get("providers", []):
                 if provider_config.get("enabled", False):
-                    name = provider_config.get("name", "").capitalize()
+                    pid = provider_config.get("name", "")
+                    name = self.PROVIDER_DISPLAY.get(pid, pid.capitalize())
                     self.provider_combo.addItem(name, provider_config)
-                    
+
                     # Сохраняем модель для провайдера
                     model = provider_config.get("model", "")
                     if model:
                         self.provider_model_map[name] = model
-            
+
             # Если нет включенных провайдеров, добавляем все как заглушку
             if self.provider_combo.count() == 0:
-                self.provider_combo.addItems(["Ollama", "Groq", "Gemini", "Openai", "Anthropic"])
+                self.provider_combo.addItems(["Ollama Local", "Groq", "Gemini",
+                                              "OpenAI", "Anthropic"])
                 self.provider_model_map = {
-                    "Ollama": "llama3.2:3b",
+                    "Ollama Local": "llama3.2:3b",
                     "Groq": "openai/gpt-oss-20b",
                     "Gemini": "gemini-3.8-flash",
-                    "Openai": "gpt-4o-mini",
+                    "OpenAI": "gpt-4o-mini",
                     "Anthropic": "claude-sonnet-4-20250514"
                 }
             
@@ -1368,12 +1387,13 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logger.error(f"Error loading LLM settings: {e}")
-            self.provider_combo.addItems(["Ollama", "Groq", "Gemini", "Openai", "Anthropic"])
+            self.provider_combo.addItems(["Ollama Local", "Groq", "Gemini",
+                                          "OpenAI", "Anthropic"])
             self.provider_model_map = {
-                "Ollama": "llama3.2:3b",
+                "Ollama Local": "llama3.2:3b",
                 "Groq": "openai/gpt-oss-20b",
                 "Gemini": "gemini-3.8-flash",
-                "Openai": "gpt-4o-mini",
+                "OpenAI": "gpt-4o-mini",
                 "Anthropic": "claude-sonnet-4-20250514"
             }
     
@@ -1387,14 +1407,17 @@ class MainWindow(QMainWindow):
         if base_model:
             candidates.append(base_model)
         # Только реально предоставляемые провайдерами модели.
-        # Groq проверен живым API 27.09.2026 (ключ пользователя):
+        # Groq проверен живым API (ключ пользователя):
         #   openai/gpt-oss-20b, openai/gpt-oss-120b, qwen/qwen3.8-27b.
         # Gemini: gemini-3.8-flash (дефолт), плюс 2.5/3.5 из живого списка.
-        # Ollama: точный список подтягивается с сервера (кнопка 🔄 / автовыбор).
-        if provider_name == "Ollama":
+        # Ollama Local/Cloud: точный список подтягивается с сервера.
+        if provider_name == "Ollama Local":
             candidates += ["llama3.2:3b", "llama3.1:8b", "codellama:7b", "mistral:7b"]
             # Асинхронно подгружаем реальные модели с сервера
-            QTimer.singleShot(0, self._fetch_ollama_models_for_chat)
+            QTimer.singleShot(0, self._fetch_ollama_local_models_for_chat)
+        elif provider_name == "Ollama Cloud":
+            candidates += ["llama3.2:3b", "llama3.1:8b"]
+            QTimer.singleShot(0, self._fetch_ollama_cloud_models_for_chat)
         elif provider_name == "Groq":
             candidates += ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
             QTimer.singleShot(0, self._fetch_groq_models_for_chat)
@@ -1402,7 +1425,7 @@ class MainWindow(QMainWindow):
             candidates += ["gemini-3.8-flash", "gemini-2.5-flash",
                            "gemini-2.5-flash-lite", "gemini-3.5-flash"]
             QTimer.singleShot(0, self._fetch_gemini_models_for_chat)
-        elif provider_name == "Openai":
+        elif provider_name == "OpenAI":
             candidates += ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"]
             QTimer.singleShot(0, self._fetch_openai_models_for_chat)
         elif provider_name == "Anthropic":
@@ -1445,7 +1468,7 @@ class MainWindow(QMainWindow):
         if not model_names:
             return
         try:
-            if self.provider_combo.currentText().lower() != provider_id:
+            if self._provider_id(self.provider_combo.currentText()) != provider_id:
                 return
         except Exception:
             return
@@ -1484,18 +1507,37 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.debug("Gemini models fetch failed: %s", e)
 
-    def _fetch_ollama_models_for_chat(self) -> None:
-        """Модели Ollama для чата через provider.list_models (ТЗ §3.2/§3.3)."""
+    def _fetch_ollama_local_models_for_chat(self) -> None:
+        """Модели Ollama Local для чата (без ключа)."""
         try:
             from gmod.infrastructure.llm.factory import (
                 build_provider, provider_entry_from_settings,
             )
-            provider = build_provider("ollama", provider_entry_from_settings("ollama"))
+            provider = build_provider("ollama_local",
+                                      provider_entry_from_settings("ollama_local"))
             if provider is None:
                 return
-            self._fill_chat_models("ollama", provider.list_models())
+            self._fill_chat_models("ollama_local", provider.list_models())
         except Exception as e:
-            logger.debug("Ollama models fetch failed: %s", e)
+            logger.debug("Ollama Local models fetch failed: %s", e)
+
+    def _fetch_ollama_cloud_models_for_chat(self) -> None:
+        """Модели Ollama Cloud для чата (с ключом)."""
+        try:
+            from gmod.infrastructure.llm.factory import (
+                build_provider, provider_entry_from_settings,
+            )
+            provider = build_provider("ollama_cloud",
+                                      provider_entry_from_settings("ollama_cloud"))
+            if provider is None:
+                return
+            self._fill_chat_models("ollama_cloud", provider.list_models())
+        except Exception as e:
+            logger.debug("Ollama Cloud models fetch failed: %s", e)
+
+    def _fetch_ollama_models_for_chat(self) -> None:
+        """Алиас: локальные модели (совместимость)."""
+        self._fetch_ollama_local_models_for_chat()
 
     def _build_llm_config_for_selection(self) -> dict:
         """Конфиг с выбранным в чате провайдером первым в fallback-цепочке.
@@ -1506,7 +1548,7 @@ class MainWindow(QMainWindow):
         settings = get_settings()
         cfg = settings.build_llm_config()
         try:
-            selected = self.provider_combo.currentText().lower()
+            selected = self._provider_id(self.provider_combo.currentText())
             sel_model = self.model_combo.currentText().strip()
         except Exception:
             return cfg
@@ -1532,14 +1574,22 @@ class MainWindow(QMainWindow):
             factory = LLMProviderFactory(cfg)
             statuses = factory.check_all_statuses()
             try:
-                selected = self.provider_combo.currentText()
+                selected = self._provider_id(self.provider_combo.currentText())
             except Exception:
                 selected = ""
-            # Ищем статус выбранного провайдера
+            # Ищем статус выбранного провайдера по машинному id.
             shown = None
-            for prov_name, st in statuses.items():
-                if selected and selected.lower() in prov_name.lower():
-                    shown = st
+            for provider in factory.get_all_providers():
+                try:
+                    pid = (provider.config.get("provider_id", "")
+                           if provider.config else "")
+                except Exception:
+                    pid = ""
+                if selected and pid == selected:
+                    for prov_name, st in statuses.items():
+                        if provider.get_name() == prov_name:
+                            shown = st
+                            break
                     break
             if shown is None:
                 ok_all = [s for s in statuses.values() if s.get("ok")]
@@ -3713,15 +3763,22 @@ class MainWindow(QMainWindow):
             return scroll
 
         # ---------- 1. AI-провайдеры (ТЗ §5) ----------
+        # Ollama разделена: Local (localhost, без ключа) и Cloud
+        # (OpenAI-совместимый endpoint, ключ обязателен).
         p1 = QWidget()
         p1_layout = QVBoxLayout(p1)
         W["prov"] = {}
-        _titles = (("ollama", "Ollama (локальный/облачный)"),
+        _titles = (("ollama_local", "Ollama Local (localhost, без ключа)"),
+                   ("ollama_cloud", "Ollama Cloud (с API-ключом)"),
                    ("groq", "Groq"), ("gemini", "Gemini"),
                    ("openai", "OpenAI"), ("anthropic", "Anthropic"))
-        _keys = {"ollama": settings.ollama_api_key, "groq": settings.groq_api_key,
-                 "gemini": settings.gemini_api_key, "openai": settings.openai_api_key,
+        _keys = {"ollama_cloud": settings.ollama_cloud_api_key,
+                 "groq": settings.groq_api_key,
+                 "gemini": settings.gemini_api_key,
+                 "openai": settings.openai_api_key,
                  "anthropic": settings.anthropic_api_key}
+        _models = {"ollama_local": settings.ollama_model,
+                   "ollama_cloud": settings.ollama_cloud_model}
         for pname, title in _titles:
             group = QGroupBox(title)
             form = QFormLayout(group)
@@ -3732,46 +3789,51 @@ class MainWindow(QMainWindow):
             form.addRow(enabled)
             form.addRow(order)
             entry = {"enabled": enabled, "order": order}
-            if pname == "ollama":
+            if pname in ("ollama_local", "ollama_cloud"):
                 url_row = QHBoxLayout()
-                url = QLineEdit(settings.ollama_url)
-                url.setPlaceholderText("http://localhost:11434")
+                url = QLineEdit(settings.ollama_url if pname == "ollama_local"
+                                else settings.ollama_cloud_url)
+                url.setPlaceholderText("http://localhost:11434" if pname == "ollama_local"
+                                       else "https://ollama.com")
+                url.setToolTip("URL сервера. Модели выбираются на странице «Модели» (кнопка 🔄).")
                 url_row.addWidget(url, 1)
-                refresh_models_btn = QPushButton("🔄 Обновить модели")
-                refresh_models_btn.setToolTip("Получить список моделей с сервера Ollama")
-                refresh_models_btn.clicked.connect(
-                    lambda _c, u=url: self._fetch_ollama_models(u, tab)
-                )
-                url_row.addWidget(refresh_models_btn)
                 form.addRow("URL сервера:", url_row)
                 entry["url"] = url
-                # API-ключ для Ollama Cloud (для локального сервера — пусто)
-                key = QLineEdit(_keys["ollama"])
-                key.setEchoMode(QLineEdit.Password)
-                key.setPlaceholderText("API-ключ (для Ollama Cloud)")
-                form.addRow("API-ключ:", key)
-                entry["api_key"] = key
-                # Комбобокс моделей (заполнится после нажатия "Обновить модели")
-                model_combo = QComboBox()
-                model_combo.setEditable(True)
-                model_combo.addItem(settings.ollama_model)
-                model_combo.setToolTip("Выберите или введите модель. Нажмите 'Обновить модели' для списка с сервера")
-                form.addRow("Модель:", model_combo)
-                entry["model_combo"] = model_combo
+                if pname == "ollama_local":
+                    info = QLabel("Локальный режим: API-ключ не нужен и игнорируется. "
+                                  "Модель — на странице «Модели».")
+                    info.setStyleSheet("color: gray; font-size: 11px;")
+                    form.addRow(info)
+                    entry["api_key"] = None
+                else:
+                    key = QLineEdit(_keys["ollama_cloud"])
+                    key.setEchoMode(QLineEdit.Password)
+                    key.setPlaceholderText("API-ключ Ollama Cloud (обязателен)")
+                    form.addRow("API-ключ:", key)
+                    entry["api_key"] = key
+                    form.addRow(self._make_credential_row(pname, key, tab))
             else:
                 key = QLineEdit(_keys[pname])
                 key.setEchoMode(QLineEdit.Password)
                 key.setPlaceholderText("API-ключ")
                 form.addRow("API-ключ:", key)
                 entry["api_key"] = key
-            # Управление ключом: источник + показать/копировать/удалить (ТЗ §5).
-            form.addRow(self._make_credential_row(pname, entry["api_key"], tab))
+                # Управление ключом: источник + показать/копировать/удалить (ТЗ §5).
+                form.addRow(self._make_credential_row(pname, key, tab))
+            # Статус проверки: цветной индикатор рядом с кнопкой.
+            check_row = QHBoxLayout()
+            status_dot = QLabel("●")
+            status_dot.setStyleSheet("color: gray; font-size: 16px;")
+            status_dot.setToolTip("Статус последней проверки")
+            check_row.addWidget(status_dot)
             check_btn = QPushButton("Проверить соединение")
             check_btn.setProperty("provider", pname)
             check_btn.clicked.connect(
                 lambda _c, n=pname: self._check_provider_connection(n, tab)
             )
-            form.addRow(check_btn)
+            check_row.addWidget(check_btn, 1)
+            form.addRow(check_row)
+            entry["status_dot"] = status_dot
             test_btn = QPushButton("Тестовый inference")
             test_btn.setToolTip("Явный тестовый запрос к модели (ТЗ §6, тратит токены)")
             test_btn.clicked.connect(
@@ -3780,9 +3842,14 @@ class MainWindow(QMainWindow):
             form.addRow(test_btn)
             W["prov"][pname] = entry
             p1_layout.addWidget(group)
-        # Порядок из текущего конфига
+        # Порядок из текущего конфига (legacy "ollama" маппим по URL).
         for idx, p in enumerate(settings.llm_providers):
             name = p.get("name")
+            if name == "ollama":
+                url = str(p.get("url", "")).rstrip("/").lower()
+                name = ("ollama_local" if url in ("http://localhost:11434",
+                                                  "http://127.0.0.1:11434", "")
+                        else "ollama_cloud")
             if name in W["prov"]:
                 W["prov"][name]["enabled"].setChecked(bool(p.get("enabled", False)))
                 W["prov"][name]["order"].setValue(idx + 1)
@@ -3792,8 +3859,36 @@ class MainWindow(QMainWindow):
         # ---------- 2. Модели ----------
         p2 = QWidget()
         p2_layout = QFormLayout(p2)
-        W["ollama_model"] = QLineEdit(settings.ollama_model)
-        p2_layout.addRow("Ollama (по умолчанию):", W["ollama_model"])
+        ollama_local_row = QHBoxLayout()
+        W["ollama_local_model"] = QComboBox()
+        W["ollama_local_model"].setEditable(True)
+        W["ollama_local_model"].addItem(settings.ollama_model)
+        W["ollama_local_model"].setCurrentText(settings.ollama_model)
+        ollama_local_row.addWidget(W["ollama_local_model"], 1)
+        ollama_local_refresh = QPushButton("🔄")
+        ollama_local_refresh.setMaximumWidth(40)
+        ollama_local_refresh.setToolTip("Обновить список моделей с локального Ollama")
+        ollama_local_refresh.clicked.connect(
+            lambda _c: self._fetch_ollama_models(
+                W["prov"]["ollama_local"]["url"].text(), tab, "ollama_local",
+                W["ollama_local_model"]))
+        ollama_local_row.addWidget(ollama_local_refresh)
+        p2_layout.addRow("Ollama Local:", ollama_local_row)
+        ollama_cloud_row = QHBoxLayout()
+        W["ollama_cloud_model"] = QComboBox()
+        W["ollama_cloud_model"].setEditable(True)
+        W["ollama_cloud_model"].addItem(settings.ollama_cloud_model)
+        W["ollama_cloud_model"].setCurrentText(settings.ollama_cloud_model)
+        ollama_cloud_row.addWidget(W["ollama_cloud_model"], 1)
+        ollama_cloud_refresh = QPushButton("🔄")
+        ollama_cloud_refresh.setMaximumWidth(40)
+        ollama_cloud_refresh.setToolTip("Обновить список моделей Ollama Cloud")
+        ollama_cloud_refresh.clicked.connect(
+            lambda _c: self._fetch_ollama_models(
+                W["prov"]["ollama_cloud"]["url"].text(), tab, "ollama_cloud",
+                W["ollama_cloud_model"]))
+        ollama_cloud_row.addWidget(ollama_cloud_refresh)
+        p2_layout.addRow("Ollama Cloud:", ollama_cloud_row)
         # Groq/Gemini: редактируемый список + кнопка обновления с сервера.
         groq_row = QHBoxLayout()
         W["groq_model"] = QComboBox()
@@ -4071,7 +4166,7 @@ class MainWindow(QMainWindow):
                 ("behavior_model", "behavior_model"),
                 ("groq_model", "model"), ("gemini_model", "model"),
                 ("openai_model", "model"), ("anthropic_model", "model"),
-                ("ollama_model", "model"),
+                ("ollama_local_model", "model"), ("ollama_cloud_model", "model"),
             ):
                 if _wkey in W:
                     _describe(W[_wkey], _dkey)
@@ -4138,8 +4233,10 @@ class MainWindow(QMainWindow):
                 providers = []
                 for pname, entry in ordered:
                     item = {"name": pname, "enabled": entry["enabled"].isChecked()}
-                    raw_key = entry["api_key"].text().strip()
-                    if _cs is not None:
+                    key_widget = entry.get("api_key")
+                    # Local: ключа нет вообще. Остальные: поле -> keyring, в YAML пусто.
+                    raw_key = key_widget.text().strip() if key_widget is not None else ""
+                    if _cs is not None and key_widget is not None:
                         try:
                             # Пустое поле = ключ удалён (ТЗ §5), иначе — в keyring.
                             if raw_key:
@@ -4149,13 +4246,14 @@ class MainWindow(QMainWindow):
                         except Exception as e:
                             logger.warning("credential save %s: %s", pname, e)
                     item["api_key"] = ""
-                    if pname == "ollama":
+                    if pname == "ollama_local":
                         item["url"] = entry["url"].text().strip() or "http://localhost:11434"
-                        model_combo = entry.get("model_combo")
-                        if model_combo:
-                            item["model"] = model_combo.currentText().strip() or "llama3.2:3b"
-                        else:
-                            item["model"] = W["ollama_model"].text().strip() or "llama3.2:3b"
+                        item["model"] = W["ollama_local_model"].currentText().strip() \
+                            or "llama3.2:3b"
+                    elif pname == "ollama_cloud":
+                        item["url"] = entry["url"].text().strip() or "https://ollama.com"
+                        item["model"] = W["ollama_cloud_model"].currentText().strip() \
+                            or "llama3.2:3b"
                     elif pname == "groq":
                         item["model"] = W["groq_model"].currentText().strip() or "openai/gpt-oss-20b"
                     elif pname == "gemini":
@@ -4354,6 +4452,17 @@ class MainWindow(QMainWindow):
             detail = status.detail
             if detail:
                 lines.append(f"Детали: {detail}")
+            # Цветной индикатор рядом с кнопкой проверки.
+            try:
+                from gmod.infrastructure.llm.health import REASON_COLORS
+                dot = self._settings_W.get("prov", {}).get(
+                    provider_name, {}).get("status_dot")
+                if dot is not None:
+                    color = REASON_COLORS.get(status.reason, "gray")
+                    dot.setStyleSheet(f"color: {color}; font-size: 16px;")
+                    dot.setToolTip(status.message)
+            except Exception:
+                pass
             lines.append("")
             lines.append("Запустить тестовый inference (тратит токены)?")
             reply = QMessageBox.question(parent, "Проверка соединения",
@@ -4375,16 +4484,31 @@ class MainWindow(QMainWindow):
 
             QMessageBox.warning(parent, "Проверка соединения", f"Ошибка: {e}")
 
-    def _fetch_ollama_models(self, url_widget, parent_tab) -> None:
-        """Список моделей Ollama через provider.list_models (ТЗ §3.2/§3.3)."""
+    def _fetch_ollama_models(self, url: str, parent_tab,
+                             provider_name: str = "ollama_local",
+                             target_combo=None) -> None:
+        """Список моделей Ollama в указанный комбобокс (через провайдер)."""
         from PySide6.QtWidgets import QMessageBox, QApplication
         from gmod.infrastructure.llm.factory import build_provider
 
-        url = url_widget.text().strip() or "http://localhost:11434"
+        url = (url if isinstance(url, str) else "") or "http://localhost:11434"
+        # Обратная совместимость: раньше первым аргументом был QLineEdit.
+        if hasattr(url, "text"):
+            try:
+                url = url.text().strip() or "http://localhost:11434"
+            except Exception:
+                url = "http://localhost:11434"
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            provider = build_provider("ollama", {"name": "ollama", "enabled": True,
-                                                 "url": url, "model": ""})
+            entry = {"name": provider_name, "enabled": True,
+                     "url": url, "model": ""}
+            if provider_name == "ollama_cloud":
+                try:
+                    from gmod.config.settings import get_settings
+                    entry["api_key"] = get_settings().ollama_cloud_api_key
+                except Exception:
+                    entry["api_key"] = ""
+            provider = build_provider(provider_name, entry)
             if provider is None:
                 return
             try:
@@ -4396,23 +4520,26 @@ class MainWindow(QMainWindow):
                 return
             if not model_names:
                 QMessageBox.warning(parent_tab, "Модели не найдены",
-                    "Ollama ответил, но список моделей пуст.\n"
+                    "Сервер ответил, но список моделей пуст.\n"
                     "Проверьте, что модели установлены: `ollama pull <model>`")
                 return
-            # Находим комбобокс модели в той же вкладке
-            for pname, entry in self._settings_W.get("prov", {}).items():
-                if pname == "ollama" and "model_combo" in entry:
-                    combo = entry["model_combo"]
-                    current = combo.currentText()
-                    combo.blockSignals(True)
-                    combo.clear()
-                    combo.addItems(model_names)
-                    if current in model_names:
-                        combo.setCurrentText(current)
-                    else:
-                        combo.setCurrentIndex(0)
-                    combo.blockSignals(False)
-                    break
+            # Находим комбобокс модели: явный target либо группа провайдера.
+            target = target_combo
+            if target is None:
+                for pname, pentry in self._settings_W.get("prov", {}).items():
+                    if pname == provider_name and "model_combo" in pentry:
+                        target = pentry["model_combo"]
+                        break
+            if target is not None:
+                current = target.currentText()
+                target.blockSignals(True)
+                target.clear()
+                target.addItems(model_names)
+                if current in model_names:
+                    target.setCurrentText(current)
+                else:
+                    target.setCurrentIndex(0)
+                target.blockSignals(False)
             QMessageBox.information(parent_tab, "Готово",
                 f"Получено моделей: {len(model_names)}")
         except Exception as e:

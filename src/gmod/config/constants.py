@@ -44,6 +44,8 @@ DEFAULT_MAX_TOKENS = 2000
 #   (gemini-*-1.5, gemini-2.0-flash, gemini-flash/pro — отключены)
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
+DEFAULT_OLLAMA_CLOUD_URL = "https://ollama.com"
+DEFAULT_OLLAMA_CLOUD_MODEL = "llama3.2:3b"
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b"
 # Gemini: live API 29.09.2026 отклонил gemini-2.5-flash
 # ("no longer available to new users, use gemini-3.8-flash").

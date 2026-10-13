@@ -459,7 +459,8 @@ class TestSettings:
         assert "llm" in llm_cfg
         assert "providers" in llm_cfg["llm"]
         assert llm_cfg["llm"]["message_limit"] == 7
-        assert llm_cfg["llm"]["providers"][0]["name"] == "ollama"
+        # Legacy "ollama" на localhost маппится в ollama_local.
+        assert llm_cfg["llm"]["providers"][0]["name"] == "ollama_local"
 
     def test_ollama_url_from_providers(self, tmp_path):
         from gmod.config.settings import Settings, reset_settings

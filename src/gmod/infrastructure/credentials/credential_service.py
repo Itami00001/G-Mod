@@ -19,6 +19,7 @@ SERVICE_NAME = "GMod"
 # account -> env var
 ENV_VARS: Dict[str, str] = {
     "ollama": "OLLAMA_API_KEY",
+    "ollama_cloud": "OLLAMA_API_KEY",
     "groq": "GROQ_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "openai": "OPENAI_API_KEY",

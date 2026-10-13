@@ -4,7 +4,7 @@ import logging
 from typing import List, Optional, Dict, Any
 
 from gmod.infrastructure.llm.base import BaseLLMProvider
-from gmod.infrastructure.llm.ollama_provider import OllamaProvider
+from gmod.infrastructure.llm.ollama_provider import OllamaProvider, OllamaCloudProvider
 from gmod.infrastructure.llm.groq_provider import GroqProvider
 from gmod.infrastructure.llm.gemini_provider import GeminiProvider
 from gmod.infrastructure.llm.openai_provider import OpenAIProvider
@@ -13,8 +13,12 @@ from gmod.infrastructure.llm.anthropic_provider import AnthropicProvider
 logger = logging.getLogger(__name__)
 
 # Расширяемый реестр (ТЗ §3.1): новые провайдеры добавляются одной строкой.
+# "ollama" оставлен для обратной совместимости старых конфигов
+# (localhost -> Local, иначе -> Cloud).
 PROVIDER_CLASSES = {
     "ollama": OllamaProvider,
+    "ollama_local": OllamaProvider,
+    "ollama_cloud": OllamaCloudProvider,
     "groq": GroqProvider,
     "gemini": GeminiProvider,
     "openai": OpenAIProvider,
@@ -100,14 +104,30 @@ class LLMProviderFactory:
             logger.warning(f"Unknown provider: {name}")
             return None
 
+        # Legacy "ollama": localhost/пусто -> Local, другой URL -> Cloud.
+        resolved = name.lower()
+        if resolved == "ollama":
+            url = str(config.get("url", "")).rstrip("/").lower()
+            if url and url not in ("http://localhost:11434",
+                                   "http://127.0.0.1:11434"):
+                resolved = "ollama_cloud"
+                provider_class = OllamaCloudProvider
+                logger.info("Legacy 'ollama' с URL %s -> OllamaCloud", url)
+            else:
+                resolved = "ollama_local"
+                logger.info("Legacy 'ollama' -> Ollama Local")
+
         api_key = config.get("api_key")
         provider_config = {k: v for k, v in config.items() if k not in ("api_key", "enabled", "order")}
-        # Ollama тоже может нести api_key внутри config (для Ollama Cloud) —
-        # провайдер сам разрулит приоритет.
-        if name.lower() == "ollama" and api_key:
+        if resolved in ("ollama", "ollama_local", "ollama_cloud") and api_key:
             provider_config.setdefault("api_key", api_key)
 
-        return provider_class(api_key=api_key, config=provider_config)
+        provider = provider_class(api_key=api_key, config=provider_config)
+        try:
+            provider.config["provider_id"] = resolved
+        except Exception:
+            pass
+        return provider
 
     def get_provider_by_name(self, name: str) -> Optional[BaseLLMProvider]:
         """Найти включённый провайдер по имени (для UI: модели, проверки)."""
@@ -323,7 +343,15 @@ def provider_entry_from_settings(name: str) -> Dict[str, Any]:
     if name == "ollama":
         entry["url"] = settings.ollama_url
         entry["model"] = settings.ollama_model
-        entry["api_key"] = settings.ollama_api_key
+        entry["api_key"] = ""
+    elif name == "ollama_local":
+        entry["url"] = settings.ollama_url
+        entry["model"] = settings.ollama_model
+        entry["api_key"] = ""
+    elif name == "ollama_cloud":
+        entry["url"] = settings.ollama_cloud_url
+        entry["model"] = settings.ollama_cloud_model
+        entry["api_key"] = settings.ollama_cloud_api_key
     elif name == "groq":
         entry["api_key"] = settings.groq_api_key
         entry["model"] = settings.groq_model

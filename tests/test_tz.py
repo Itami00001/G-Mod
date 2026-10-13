@@ -43,22 +43,83 @@ def test_ollama_local_without_key():
     assert p.validate_credentials().ok is True
 
 
-def test_ollama_cloud_with_key():
-    """Cloud Ollama: Bearer-заголовок."""
+def test_http_status_table():
+    """Таблица HTTP-кодов: 401/403/429/404/timeout/refused."""
+    from gmod.infrastructure.llm.health import classify_exception, REASON_COLORS
+
+    class _E(Exception):
+        def __init__(self, code):
+            self.status_code = code
+            super().__init__(f"HTTP {code}")
+
+    assert classify_exception(_E(401))[0] == "bad_key"
+    assert classify_exception(_E(403))[0] == "forbidden"
+    assert classify_exception(_E(429))[0] == "quota"
+    assert classify_exception(_E(404))[0] == "model_missing"
+    assert "выключен" in classify_exception(Exception("connection refused"))[1]
+    assert "не отвечает" in classify_exception(Exception("timeout expired"))[1]
+    assert REASON_COLORS["ok"] == "green"
+    assert REASON_COLORS["bad_key"] == "red"
+
+
+def test_legacy_ollama_mapping():
+    """Legacy 'ollama': localhost -> Local, cloud URL -> Cloud."""
+    from gmod.infrastructure.llm.factory import LLMProviderFactory
+    from gmod.infrastructure.llm.ollama_provider import (
+        OllamaProvider, OllamaCloudProvider,
+    )
+    factory = LLMProviderFactory.__new__(LLMProviderFactory)
+    factory.config = {}
+    factory._providers = []
+    local = factory._create_provider(
+        "ollama", {"name": "ollama", "enabled": True,
+                   "url": "http://localhost:11434", "model": "m"})
+    cloud = factory._create_provider(
+        "ollama", {"name": "ollama", "enabled": True,
+                   "url": "https://ollama.com", "model": "m", "api_key": "k"})
+    assert isinstance(local, OllamaProvider)
+    assert not isinstance(local, OllamaCloudProvider)
+    assert local.config.get("provider_id") == "ollama_local"
+    assert isinstance(cloud, OllamaCloudProvider)
+    assert cloud.config.get("provider_id") == "ollama_cloud"
+
+
+def test_ollama_local_ignores_key():
+    """Local Ollama: переданный ключ игнорируется."""
     from gmod.infrastructure.llm.ollama_provider import OllamaProvider
     p = OllamaProvider(api_key="secret123",
-                       config={"url": "https://ollama.com", "model": "m"})
+                       config={"url": "http://localhost:11434", "model": "m"})
+    assert p.api_key is None
+    assert p._auth_headers() == {}
+    assert p.validate_credentials().ok is True
+
+
+def test_ollama_cloud_with_key():
+    """Cloud Ollama: Bearer-заголовок."""
+    from gmod.infrastructure.llm.ollama_provider import OllamaCloudProvider
+    p = OllamaCloudProvider(api_key="secret123",
+                            config={"url": "https://ollama.com", "model": "m"})
     assert p._auth_headers() == {"Authorization": "Bearer secret123"}
+
+
+def test_ollama_cloud_requires_key():
+    """Cloud без ключа: no_key."""
+    from gmod.infrastructure.llm.ollama_provider import OllamaCloudProvider
+    p = OllamaCloudProvider(api_key="",
+                            config={"url": "https://ollama.com", "model": "m"})
+    status = p.validate_credentials()
+    assert status.ok is False
+    assert status.reason == "no_key"
 
 
 def test_ollama_cloud_model_listing_with_key():
     """ТЗ §3.3: листинг моделей Ollama Cloud ПЕРЕДАЁТ API-key."""
-    from gmod.infrastructure.llm.ollama_provider import OllamaProvider
-    p = OllamaProvider(api_key="cloud-key-1",
-                       config={"url": "https://ollama.com", "model": "m"})
+    from gmod.infrastructure.llm.ollama_provider import OllamaCloudProvider
+    p = OllamaCloudProvider(api_key="cloud-key-1",
+                            config={"url": "https://ollama.com", "model": "m"})
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {"models": [{"name": "llama3.2:3b"}]}
+    mock_resp.json.return_value = {"data": [{"id": "llama3.2:3b"}]}
     with patch("requests.get", return_value=mock_resp) as mg:
         names = p.list_models()
     assert names == ["llama3.2:3b"]
@@ -202,17 +263,15 @@ def test_chat_session_create(tmp_db):
     assert tmp_db.get_chat_session(s["id"])["repository_id"] == "r1"
 
 
-def test_message_save(tmp_db):
+def test_message_save(tmp_db, monkeypatch):
     svc = _chat_service(tmp_db)
     s = svc.get_or_create_session("default", "r1")
     with patch.object(type(svc.db), "save_chat_message",
                       wraps=svc.db.save_chat_message) as spied:
         import gmod.infrastructure.llm.factory as fac
-        fac.LLMProviderFactory.generate_with_fallback = MagicMock(return_value="hi")
-        try:
-            result = svc.send_message(s["id"], "hello?")
-        finally:
-            del fac.LLMProviderFactory.generate_with_fallback
+        monkeypatch.setattr(fac.LLMProviderFactory, "generate_with_fallback",
+                            MagicMock(return_value="hi"))
+        result = svc.send_message(s["id"], "hello?")
         assert result["status"] == "success"
         assert spied.call_count == 2  # вопрос + ответ сразу
 
@@ -230,7 +289,7 @@ def test_message_restore(tmp_db):
     assert roles == ["user", "assistant"]
 
 
-def test_context_restore(tmp_db):
+def test_context_restore(tmp_db, monkeypatch):
     """Вопрос пользователя попадает в промпт (ТЗ §8)."""
     import gmod.infrastructure.llm.factory as fac
     captured = {}
@@ -239,35 +298,30 @@ def test_context_restore(tmp_db):
         captured["prompt"] = prompt
         return "ok"
 
-    fac.LLMProviderFactory.generate_with_fallback = fake_gen
-    try:
-        svc = _chat_service(tmp_db)
-        s = svc.get_or_create_session("default", "r1")
-        svc.send_message(s["id"], "UNIQUE_Q_987", system_prompt="SYS",
-                         workspace_context="WS", repository_context="REPO")
-    finally:
-        del fac.LLMProviderFactory.generate_with_fallback
+    monkeypatch.setattr(fac.LLMProviderFactory, "generate_with_fallback", fake_gen)
+    svc = _chat_service(tmp_db)
+    s = svc.get_or_create_session("default", "r1")
+    svc.send_message(s["id"], "UNIQUE_Q_987", system_prompt="SYS",
+                     workspace_context="WS", repository_context="REPO")
     prompt = captured["prompt"]
     assert "UNIQUE_Q_987" in prompt
     assert "[SYSTEM]: SYS" in prompt and "[WORKSPACE]: WS" in prompt
     assert "[REPOSITORY]: REPO" in prompt
 
 
-def test_summary_creation(tmp_db):
+def test_summary_creation(tmp_db, monkeypatch):
     """При лимите — summary, история цела (ТЗ §10)."""
     import gmod.infrastructure.llm.factory as fac
-    fac.LLMProviderFactory.generate_with_fallback = MagicMock(return_value="s")
-    try:
-        svc = _chat_service(tmp_db, message_limit=3)
-        s = svc.get_or_create_session("default", "r1")
-        svc.send_message(s["id"], "q1")
-        svc.send_message(s["id"], "q2")
-        svc.send_message(s["id"], "q3")
-        updated = tmp_db.get_chat_session(s["id"])
-        assert updated["summary"] != ""
-        assert len(svc.get_messages(s["id"])) == 6  # история не удалена
-    finally:
-        del fac.LLMProviderFactory.generate_with_fallback
+    monkeypatch.setattr(fac.LLMProviderFactory, "generate_with_fallback",
+                        MagicMock(return_value="s"))
+    svc = _chat_service(tmp_db, message_limit=3)
+    s = svc.get_or_create_session("default", "r1")
+    svc.send_message(s["id"], "q1")
+    svc.send_message(s["id"], "q2")
+    svc.send_message(s["id"], "q3")
+    updated = tmp_db.get_chat_session(s["id"])
+    assert updated["summary"] != ""
+    assert len(svc.get_messages(s["id"])) == 6  # история не удалена
 
 
 # ============================================================
