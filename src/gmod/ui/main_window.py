@@ -1110,20 +1110,16 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Метрики не получилось рассчитать")
 
     def _get_current_repo_id(self) -> Optional[str]:
-        """Получение ID текущего репозитория."""
+        """Получение ID текущего репозитория.
+
+        Строгая семантика: только явный current_repo_id. Fallback на
+        «первый репозиторий с метриками» удалён — он воскрешал сброшенное
+        состояние и путал чужой репозиторий с текущим.
+        """
         try:
-            # Пытаемся получить из состояния рабочей области
             repo_id = self.db.load_workspace_state("current_repo_id")
             if repo_id:
                 return repo_id
-            
-            # Пытаемся получить первый доступный репозиторий
-            with self.db.get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT DISTINCT repo_id FROM raw_metrics LIMIT 1")
-                row = cursor.fetchone()
-                if row:
-                    return row[0]
         except Exception as e:
             logger.error(f"Error getting repo id: {e}")
         return None

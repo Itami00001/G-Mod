@@ -182,14 +182,21 @@ class RepositoryService:
             try:
                 git.Repo.clone_from(url, str(tmp))
                 check = git.Repo(str(tmp))
-                if not list(check.iter_commits(max_count=1)):
-                    raise RuntimeError("Клонирован пустой репозиторий без коммитов")
-                # Закрываем хендлы перед move (Windows держит файлы).
-                del check
+                try:
+                    if not list(check.iter_commits(max_count=1)):
+                        raise RuntimeError("Клонирован пустой репозиторий без коммитов")
+                finally:
+                    # Детерминированно отпускаем файловые хендлы (.idx/.pack),
+                    # иначе move/rmtree на Windows даёт WinError 5.
+                    try:
+                        check.close()
+                    except Exception:
+                        pass
+                    del check
                 if target.exists():
                     raise RuntimeError(f"Целевая папка появилась во время clone: {target}")
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(tmp), str(target))
+                self._move_with_retry(tmp, target)
                 logger.info("clone_safe: готово %s", target)
                 return {"status": "success", "path": str(target)}
             except Exception as e:
@@ -199,6 +206,21 @@ class RepositoryService:
                 time.sleep(1.0 * attempt)
         logger.error("clone_safe failed после %d попыток: %s", retries, last_error)
         return {"status": "error", "message": last_error}
+
+    @staticmethod
+    def _move_with_retry(src: Path, dst: Path, tries: int = 5) -> None:
+        """Перемещение с повторами: .idx/.pack может держать антивирус."""
+        import time as _time
+        last = None
+        for i in range(1, tries + 1):
+            try:
+                shutil.move(str(src), str(dst))
+                return
+            except Exception as e:
+                last = e
+                logger.warning("move попытка %d/%d: %s", i, tries, e)
+                _time.sleep(1.0 * i)
+        raise RuntimeError(f"Не удалось переместить {src} -> {dst}: {last}")
 
     def commits(self, repo_id: str, repo_path: str = "", limit: int = 100) -> list:
         """Коммиты репозитория."""
