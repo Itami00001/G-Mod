@@ -383,10 +383,15 @@ class MainWindow(QMainWindow):
         # Создание меню
         self._create_menu()
         
-        # Статус-бар
+        # Статус-бар + версия справа снизу (маркер свежести сборки).
+        from gmod.config.constants import APP_VERSION
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Готов к работе")
+        self.version_label = QLabel(APP_VERSION)
+        self.version_label.setStyleSheet("color: gray; font-size: 11px;")
+        self.version_label.setToolTip("Версия приложения")
+        self.status_bar.addPermanentWidget(self.version_label)
         
         # Создание вкладок
         self._create_central_tabs()
@@ -4785,10 +4790,23 @@ class MainWindow(QMainWindow):
             return
 
         if action in ("already_loaded", "same_url_loaded"):
-            # ТЗ §4.3: повторный clone запрещён.
+            # ТЗ §4.3: повторный clone запрещён. Показываем ЧТО именно
+            # заблокировало загрузку, чтобы не было ощущения тупика.
+            blocker = decision.get("path", "") or current_id or "?"
+            try:
+                saved_url = self.db.load_workspace_state(
+                    f"repo_{Path(blocker).name}_url") or ""
+            except Exception:
+                saved_url = ""
+            logger.info("repo lifecycle: ввод '%s' совпал с загруженным '%s'",
+                        url_text, blocker)
             reply = QMessageBox.question(
                 self, "Репозиторий",
-                f"{decision.get('message', 'Repository уже загружен.')}\nОткрыть существующий?",
+                f"{decision.get('message', 'Repository уже загружен.')}\n"
+                f"Ввод: {url_text}\n"
+                f"Загружен: {blocker}\n"
+                f"URL загруженного: {saved_url or '—'}\n\n"
+                "Открыть существующий?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
             if reply == QMessageBox.Yes:
                 self._focus_repo_files()
@@ -5973,14 +5991,15 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Не удалось вернуть сессию: {e}")
 
     def _on_about(self) -> None:
-        """Диалог 'О программе' (prompt4 п.9)."""
+        """Диалог 'О программе'."""
+        from gmod.config.constants import APP_VERSION
         QMessageBox.information(
             self, "О программе",
-            "GMod v0.1.0 — Git Archaeologist\n"
+            f"GMod {APP_VERSION} — Git Archaeologist\n"
             "AI-анализ кода: метрики, граф зависимостей, отчёты.\n"
             "Стек: Python + PySide6 + SQLite + networkx/pyqtgraph.",
         )
-        self.status_bar.showMessage("GMod v0.1.0 - Git Archaeologist")
+        self.status_bar.showMessage(f"GMod {APP_VERSION} - Git Archaeologist")
     
     def closeEvent(self, event) -> None:
         """Обработка закрытия окна (workspace 1:1)."""

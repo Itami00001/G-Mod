@@ -25,6 +25,9 @@ DATABASE_FILE = DATA_DIR / "gmod.db"
 #   workspace_views; миграция workspace_state -> workspaces.
 DB_VERSION = 3
 
+# Версия приложения (статус-бар справа снизу + «О программе»).
+APP_VERSION = "v0.2.1 Beta"
+
 # Настройки UI
 DEFAULT_WINDOW_WIDTH = 1200
 DEFAULT_WINDOW_HEIGHT = 800
