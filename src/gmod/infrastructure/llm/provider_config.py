@@ -31,7 +31,7 @@ class LLMProviderConfig:
         defaults = {
             "ollama": ("Ollama", "http://localhost:11434", "none", "ollama"),
             "ollama_local": ("Ollama Local", "http://localhost:11434", "none", ""),
-            "ollama_cloud": ("Ollama Cloud", "https://ollama.com", "bearer",
+            "ollama_cloud": ("Ollama Cloud", "https://ollama.com/v1", "bearer",
                              "ollama_cloud"),
             "groq": ("Groq", "https://api.groq.com/openai/v1", "bearer", "groq"),
             "gemini": ("Gemini", "https://generativelanguage.googleapis.com/v1beta",
@@ -51,7 +51,8 @@ class LLMProviderConfig:
             model=entry.get("model", ""),
             auth_type=entry.get("auth_type", auth),
             credential_id=entry.get("credential_id", cred),
-            supports_model_listing=name in ("ollama", "groq", "gemini", "openai",
+            supports_model_listing=name in ("ollama", "ollama_local", "ollama_cloud",
+                                            "groq", "gemini", "openai",
                                             "openrouter"),
             supports_streaming=False,
             supports_health_check=True,
