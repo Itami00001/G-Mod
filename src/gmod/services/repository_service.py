@@ -72,6 +72,16 @@ class RepositoryService:
         except Exception:
             return True
 
+    def _same_path(self, candidate: Path, repo_id: str) -> bool:
+        """Тот же физический путь, что у текущего репо (не совпадение имён)."""
+        try:
+            saved = self.db.load_workspace_state(f"repo_{repo_id}_path") or ""
+            if not saved:
+                return False
+            return Path(saved).resolve() == candidate.resolve()
+        except Exception:
+            return False
+
     def _remote_of(self, path: Path) -> str:
         try:
             import git
@@ -105,7 +115,7 @@ class RepositoryService:
         if candidate.exists():
             if self._is_git_dir(candidate):
                 remote = self._remote_of(candidate)
-                if current_id and candidate.name == current_id:
+                if current_id and self._same_path(candidate, current_id):
                     return {"action": "already_loaded", "path": str(candidate),
                             "message": "Repository уже загружен."}
                 if text and remote and text == remote:
@@ -128,8 +138,10 @@ class RepositoryService:
         name = text.rstrip("/").split("/")[-1].removesuffix(".git") or "repo"
         target = base / name
         if target.exists():
-            # Уже есть в workspace? Не клонируем повторно (ТЗ §4.3).
-            if _saved_url(name) in (text, "") or name == current_id:
+            # Строгое сравнение: загружен = совпал URL (пустой saved_url
+            # совпадением НЕ считается).
+            saved = _saved_url(name)
+            if text and saved and saved == text:
                 return {"action": "same_url_loaded", "path": str(target), "url": text,
                         "message": "Repository уже загружен."}
             if self._is_git_dir(target):
@@ -210,3 +222,64 @@ class RepositoryService:
         import git
         git.Repo(repo_path).git.checkout(branch)
         logger.info("branch switched: %s", branch)
+
+
+def sanitize_repo_paths(db=None) -> dict:
+    """Проверка записей repo_*_path при старте.
+
+    Невалидными считаются пути, которых нет на диске, либо лежащие
+    внутри каталогов сборки (dist/, build/) — наследие CWD-бага, когда
+    exe запускали из dist и клонировали относительно него.
+    Существующие пользовательские папки вне %APPDATA% НЕ трогаем.
+    Невалидные записи удаляются, current_repo_id сбрасывается, WARN в лог.
+    Метрики/отчёты в БД НЕ удаляются.
+
+    Returns:
+        {"removed": [...repo_ids...], "kept": [...]}.
+    """
+    if db is None:
+        from gmod.infrastructure.db.database import get_database
+        db = get_database()
+    removed, kept = [], []
+    try:
+        with db.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT key, value FROM workspace_state WHERE key LIKE 'repo\\_%\\_path' ESCAPE '\\'")
+            rows = list(cur.fetchall())
+    except Exception as e:
+        logger.warning("sanitize: нет доступа к workspace_state: %s", e)
+        return {"removed": removed, "kept": kept}
+    for key, value in rows:
+        try:
+            repo_id = key[len("repo_"):-len("_path")]
+            path = Path(value or "")
+            bad_reason = ""
+            if not value or not path.exists():
+                bad_reason = "путь не существует"
+            else:
+                lowered = str(path).lower().replace("/", "\\")
+                markers = ("\\dist\\", "\\build\\", "\\g-mod\\data\\",
+                           "\\gmod\\data\\", "\\src\\", "\\.git\\")
+                if any(m in lowered for m in markers):
+                    bad_reason = "путь внутри сборки/исходников"
+            if bad_reason:
+                logger.warning("sanitize: %s невалиден (%s): %s",
+                               repo_id, bad_reason, value)
+                with db.get_connection() as conn2:
+                    cur2 = conn2.cursor()
+                    for suffix in ("path", "url", "branch"):
+                        cur2.execute("DELETE FROM workspace_state WHERE key = ?",
+                                     (f"repo_{repo_id}_{suffix}",))
+                try:
+                    if db.load_workspace_state("current_repo_id") == repo_id:
+                        db.save_workspace_state("current_repo_id", "")
+                except Exception:
+                    pass
+                removed.append(repo_id)
+            else:
+                kept.append(repo_id)
+        except Exception as e:
+            logger.debug("sanitize entry: %s", e)
+    if removed:
+        logger.warning("sanitize: удалено невалидных привязок: %s (данные БД целы)", removed)
+    return {"removed": removed, "kept": kept}

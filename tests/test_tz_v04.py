@@ -535,3 +535,90 @@ def test_palette_no_banned_colors():
     for required in ("#0B1630", "#CDAA80", "#C0C0C0", "#8FAF8A",
                      "#C7A86B", "#B87979", "#8EA7C4"):
         assert required in qss, f"нет {required} в QSS"
+
+
+# ============================================================
+# Строгое сравнение URL + санитайзер путей (проблемы 1, 3)
+# ============================================================
+
+def _repo_svc(tmp_db):
+    from gmod.services.repository_service import RepositoryService
+    return RepositoryService(db=tmp_db)
+
+
+def _git_repo(path: Path, files: dict, message: str = "init"):
+    import git
+    path.mkdir(parents=True, exist_ok=True)
+    repo = git.Repo.init(path)
+    for name, content in files.items():
+        (path / name).write_text(content, encoding="utf-8")
+    repo.index.add(list(files.keys()))
+    repo.index.commit(message)
+    return repo
+
+
+def test_same_url_required(tmp_path, tmp_db):
+    """Пустой saved_url НЕ считается совпадением (ложный 'уже загружен')."""
+    target = tmp_path / "base" / "Proj"
+    _git_repo(target, {"a.py": "x = 1\n"})
+    svc = _repo_svc(tmp_db)
+    # Записи в БД нет -> saved_url == "" -> раньше давало same_url_loaded.
+    decision = svc.resolve_target("https://example.com/other/Proj.git",
+                                  base_dir=str(tmp_path / "base"))
+    assert decision["action"] != "same_url_loaded"
+
+
+def test_name_collision_not_loaded(tmp_path, tmp_db):
+    """Совпадение имени с current_id при другом URL — не 'загружен'."""
+    target = tmp_path / "base" / "G-Mod"
+    _git_repo(target, {"a.py": "x = 1\n"})
+    svc = _repo_svc(tmp_db)
+    decision = svc.resolve_target("https://example.com/other/G-Mod.git",
+                                  base_dir=str(tmp_path / "base"),
+                                  current_id="G-Mod")
+    assert decision["action"] != "same_url_loaded"
+    assert decision["action"] != "already_loaded"
+
+
+def test_same_path_is_loaded(tmp_path, tmp_db):
+    """Тот же физический путь — already_loaded; одноимённая папка — нет."""
+    real = tmp_path / "real" / "Proj"
+    _git_repo(real, {"a.py": "x = 1\n"})
+    other = tmp_path / "other" / "Proj"
+    _git_repo(other, {"a.py": "x = 1\n"})
+    tmp_db.save_workspace_state("repo_Proj_path", str(real))
+    tmp_db.save_workspace_state("current_repo_id", "Proj")
+    svc = _repo_svc(tmp_db)
+    assert svc.resolve_target(str(real), current_id="Proj")["action"] == "already_loaded"
+    assert svc.resolve_target(str(other), current_id="Proj")["action"] == "open_local"
+
+
+def test_sanitize_removes_stale_dist_path(tmp_path, tmp_db):
+    """Протухший dist-путь удаляется, current сбрасывается, метрики целы."""
+    from gmod.services.repository_service import sanitize_repo_paths
+    stale = "C:\\Users\\Itami01\\OneDrive\\Desktop\\g-mod\\dist\\GMod\\data\\repos\\G-Mod"
+    tmp_db.save_workspace_state("repo_G-Mod_path", stale)
+    tmp_db.save_workspace_state("repo_G-Mod_url", "https://example.com/G-Mod.git")
+    tmp_db.save_workspace_state("current_repo_id", "G-Mod")
+    tmp_db.save_metric("G-Mod", "c1", "a.py", "function", "f",
+                       "CyclomaticComplexity", 3.0)
+    result = sanitize_repo_paths(tmp_db)
+    assert "G-Mod" in result["removed"]
+    assert tmp_db.load_workspace_state("current_repo_id") in ("", None)
+    assert tmp_db.load_workspace_state("repo_G-Mod_path") in ("", None)
+    with tmp_db.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM raw_metrics WHERE repo_id='G-Mod'")
+        assert cur.fetchone()[0] == 1
+
+
+def test_sanitize_keeps_valid(tmp_path, tmp_db):
+    """Существующие пользовательские папки (в т.ч. вне APPDATA) не трогаем."""
+    from gmod.services.repository_service import sanitize_repo_paths
+    real = tmp_path / "myproj"
+    _git_repo(real, {"a.py": "x = 1\n"})
+    tmp_db.save_workspace_state("repo_myproj_path", str(real))
+    tmp_db.save_workspace_state("current_repo_id", "myproj")
+    result = sanitize_repo_paths(tmp_db)
+    assert "myproj" not in result["removed"]
+    assert tmp_db.load_workspace_state("current_repo_id") == "myproj"

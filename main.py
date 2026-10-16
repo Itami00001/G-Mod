@@ -39,6 +39,16 @@ def main():
     cleanup_stale_tmp([str(DATA_DIR / "repos"),
                        str(Path(tempfile.gettempdir()) / "GModClone")])
 
+    # Санитайзер протухших путей репозиториев (dist\...\repos и т.п.).
+    try:
+        from gmod.services.repository_service import sanitize_repo_paths
+        _san = sanitize_repo_paths()
+        if _san.get("removed"):
+            logger.warning("sanitize: невалидные привязки удалены: %s",
+                           _san["removed"])
+    except Exception as e:
+        logger.warning("sanitize_repo_paths: %s", e)
+
     logger.info("Starting GMod application")
     
     # Создание приложения Qt

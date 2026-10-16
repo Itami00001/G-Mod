@@ -232,6 +232,15 @@ class MainWindow(QMainWindow):
                 return
             repo_path = self.db.load_workspace_state(f"repo_{repo_id}_path")
             if not repo_path or not Path(repo_path).exists():
+                # Протухшая привязка (напр. dist\...\repos): пропускаем,
+                # current сбрасываем, данные БД НЕ трогаем. WARN в лог.
+                logger.warning(
+                    "restore: пропуск невалидного пути репозитория %s: %s",
+                    repo_id, repo_path)
+                try:
+                    self.db.save_workspace_state("current_repo_id", "")
+                except Exception:
+                    pass
                 return
             repo = Repository(
                 id=repo_id,
@@ -244,9 +253,33 @@ class MainWindow(QMainWindow):
             )
             self._populate_repo_dock(repo)
             try:
-                self._set_repo_state("ACTIVE", repo.id)
+                self._refresh_ai_status()
             except Exception:
                 pass
+            # Ветка по умолчанию + чат-сессия нового репо.
+            try:
+                if repo.default_branch and hasattr(self, "branches_combo"):
+                    self.branches_combo.blockSignals(True)
+                    self.branches_combo.setCurrentText(repo.default_branch)
+                    self.branches_combo.blockSignals(False)
+            except Exception:
+                pass
+            try:
+                from gmod.services.chat_service import ChatService
+                _svc = ChatService(db=self.db)
+                try:
+                    _provider = self.provider_combo.currentText()
+                    _model = self.model_combo.currentText()
+                except Exception:
+                    _provider, _model = "", ""
+                _sess = _svc.get_or_create_session(
+                    workspace_id="default", repository_id=repo.id,
+                    provider=_provider, model=_model)
+                self._chat_session_id = _sess["id"]
+                self._render_chat_cards(_sess["id"])
+                self._refresh_chat_sessions(_sess["id"])
+            except Exception as e:
+                logger.debug("switch chat session: %s", e)
             self.status_bar.showMessage(f"Восстановлен проект: {repo_id}")
         except Exception as e:
             logger.error(f"Error restoring last repository: {e}")
@@ -4844,6 +4877,7 @@ class MainWindow(QMainWindow):
             # Close current repository (сброс UI-привязок к старому).
             self._chat_snapshots = {}
             self._last_context = None
+            self._reset_repo_bindings()
             # Create/Load Workspace + reload UI.
             self._set_repo_state(ACTIVE, repo.id)
             self.status_bar.showMessage(f"Репозиторий загружен: {repo.name}")
@@ -4875,6 +4909,34 @@ class MainWindow(QMainWindow):
             logger.error(f"Error switching repository: {e}", exc_info=True)
             self._set_repo_state(ERROR, previous_id)
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть репозиторий: {e}")
+
+    def _reset_repo_bindings(self) -> None:
+        """Сброс UI-привязок старого репозитория при смене репо.
+
+        Чат переключается на сессию нового репо (ниже, после установки id);
+        остальное очищается сразу: детали отчёта, чекбоксы сравнения,
+        выбранные файлы, прогноз, ветка -> default.
+        """
+        try:
+            self.report_view.clear()
+            self.report_meta.clear()
+            self.report_verdict.clear()
+        except Exception:
+            pass
+        try:
+            self._compare_checked = set()
+            self._update_compare_button()
+        except Exception:
+            pass
+        try:
+            self.func_paths_list.clear()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "forecast_label"):
+                self.forecast_label.setText("Прогноз появится здесь")
+        except Exception:
+            pass
 
     def _on_switch_repository(self) -> None:
         """Кнопка «Переключить»: показать поле URL для нового репозитория."""
