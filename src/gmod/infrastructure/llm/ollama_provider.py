@@ -251,11 +251,14 @@ class OllamaProvider(BaseLLMProvider):
 
 
 class OllamaCloudProvider(BaseLLMProvider):
-    """Ollama Cloud: OpenAI-совместимый endpoint, ключ ОБЯЗАТЕЛЕН.
+    """Ollama Cloud: ключ ОБЯЗАТЕЛЕН.
 
-    Базовый URL задаётся пользователем (по умолчанию https://ollama.com —
-    проверьте по актуальным докам Ollama Cloud!). Транспорт — litellm
-    в OpenAI-совместимом режиме.
+    Транспорт выбирается по URL (нормализация):
+    - URL заканчивается на /api → нативный Ollama API
+      (POST {url}/chat, GET {url}/tags, Bearer);
+    - иначе → OpenAI-совместимый режим через litellm
+      (base https://ollama.com/v1).
+    Дефолт: https://ollama.com/v1.
     """
 
     auth_type = "bearer"
@@ -264,21 +267,93 @@ class OllamaCloudProvider(BaseLLMProvider):
         """Инициализация облачного провайдера.
 
         Args:
-            api_key: Bearer-ключ Ollama Cloud (обязателен)
+            api_key: Bearer-ключ Ollama Cloud (обязателен; SSH-ключ не подойдёт)
             config: url (base endpoint), model
         """
         super().__init__(api_key, config)
-        self.url = (config.get("url") or "https://ollama.com") if config else "https://ollama.com"
+        from gmod.config.constants import DEFAULT_OLLAMA_CLOUD_URL
+        raw_url = (config.get("url") or DEFAULT_OLLAMA_CLOUD_URL) if config else DEFAULT_OLLAMA_CLOUD_URL
+        self.url = self.normalize_url(raw_url)
         self.model = (config.get("model") or "llama3.2:3b") if config else "llama3.2:3b"
         if config and config.get("api_key") and not self.api_key:
             self.api_key = config.get("api_key")
         if not self.api_key:
             logger.warning("Ollama Cloud: API-ключ обязателен, но не задан")
 
+    @staticmethod
+    def normalize_url(url: str) -> str:
+        """Нормализовать base URL облака.
+
+        - Пусто -> https://ollama.com/v1
+        - .../api или .../api/ -> как есть (нативный транспорт)
+        - .../v1 -> как есть (OpenAI транспорт)
+        - голый хост -> + /v1 (OpenAI транспорт)
+        """
+        from gmod.config.constants import DEFAULT_OLLAMA_CLOUD_URL
+        text = (url or "").strip().rstrip("/")
+        if not text:
+            return DEFAULT_OLLAMA_CLOUD_URL
+        lowered = text.lower()
+        if lowered.endswith("/api") or lowered.endswith("/v1"):
+            return text
+        return text + "/v1"
+
+    def _transport(self) -> str:
+        """'native' для .../api, иначе 'openai'."""
+        return "native" if self.url.rstrip("/").lower().endswith("/api") else "openai"
+
+    def _native_base(self) -> str:
+        """Хост для нативных /api/tags и /api/chat."""
+        base = self.url.rstrip("/")
+        lowered = base.lower()
+        if lowered.endswith("/v1"):
+            base = base[: -len("/v1")]
+        if not lowered.endswith("/api"):
+            base = base + "/api"
+        return base
+
     def _models_url(self) -> str:
+        """URL списка моделей под текущий транспорт."""
+        if self._transport() == "native":
+            return f"{self._native_base()}/tags"
         return f"{self.url.rstrip('/')}/models"
 
     def generate(self, prompt: str, **kwargs) -> str:
+        """Генерация: нативный /api/chat или OpenAI-режим (по URL)."""
+        if not (self.api_key or "").strip():
+            raise ValueError("Ollama Cloud: API-ключ обязателен")
+        if self._transport() == "native":
+            return self._generate_native(prompt, **kwargs)
+        return self._generate_openai(prompt, **kwargs)
+
+    def _generate_native(self, prompt: str, **kwargs) -> str:
+        """Нативный POST {base}/api/chat с Bearer."""
+        import requests
+        extra = dict(kwargs)
+        temperature = extra.pop("temperature", 0.7)
+        max_tokens = extra.pop("max_tokens", 2000)
+        timeout = extra.pop("timeout", 60)
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        resp = requests.post(f"{self._native_base()}/chat", json=payload,
+                             headers=self._auth_headers(), timeout=timeout)
+        if resp.status_code in (401, 403, 404, 429):
+            raise RuntimeError(_map_http_status(resp.status_code, self.model).message)
+        resp.raise_for_status()
+        try:
+            content = resp.json().get("message", {}).get("content", "")
+        except Exception as e:
+            raise RuntimeError(f"Ollama Cloud вернул не-JSON ответ: {e}")
+        if not content:
+            raise RuntimeError("Ollama Cloud вернул пустой ответ")
+        logger.info("Ollama Cloud (native): ответ получен (длина %d)", len(content))
+        return content
+
+    def _generate_openai(self, prompt: str, **kwargs) -> str:
         """Генерация через OpenAI-совместимый endpoint (litellm)."""
         if not LITELLM_AVAILABLE:
             raise RuntimeError("litellm not available, cannot use Ollama Cloud")
@@ -348,12 +423,19 @@ class OllamaCloudProvider(BaseLLMProvider):
         return self.check_connection()
 
     def validate_credentials(self):
-        """Ключ обязателен (без сети — только формат)."""
+        """Ключ обязателен; SSH-ключ сразу помечаем предупреждением."""
         from gmod.infrastructure.llm.health import (
-            MSG_NO_KEY, MSG_OK, ProviderStatus,
+            MSG_BAD_KEY, MSG_NO_KEY, MSG_OK, ProviderStatus,
         )
-        if not (self.api_key or "").strip():
+        key = (self.api_key or "").strip()
+        if not key:
             return ProviderStatus(False, MSG_NO_KEY, "no_key", "cloud needs key")
+        if key.startswith("ssh-"):
+            return ProviderStatus(
+                False,
+                MSG_BAD_KEY + ": похоже на SSH-ключ, а нужен Bearer API-ключ "
+                "Ollama Cloud (создаётся в настройках ключей на сайте).",
+                "bad_key", "ssh-like key")
         return ProviderStatus(True, MSG_OK, "ok", "key present")
 
     def test_inference(self, prompt: str = "Ответь одним словом: тест.") -> str:

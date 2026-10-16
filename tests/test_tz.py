@@ -112,6 +112,48 @@ def test_ollama_cloud_requires_key():
     assert status.reason == "no_key"
 
 
+def test_ollama_cloud_url_normalization():
+    """Нормализаия URL: пусто//хост -> /v1, /api и /v1 как есть."""
+    from gmod.infrastructure.llm.ollama_provider import OllamaCloudProvider
+    norm = OllamaCloudProvider.normalize_url
+    assert norm("") == "https://ollama.com/v1"
+    assert norm("https://ollama.com") == "https://ollama.com/v1"
+    assert norm("https://ollama.com/v1") == "https://ollama.com/v1"
+    assert norm("https://ollama.com/api") == "https://ollama.com/api"
+
+
+def test_ollama_cloud_transport_selection():
+    """/api -> native, /v1 и голый хост -> openai."""
+    from gmod.infrastructure.llm.ollama_provider import OllamaCloudProvider
+    assert OllamaCloudProvider(config={"url": "https://ollama.com/api"})._transport() == "native"
+    assert OllamaCloudProvider(config={"url": "https://ollama.com/v1"})._transport() == "openai"
+    assert OllamaCloudProvider(config={"url": "https://ollama.com"})._transport() == "openai"
+
+
+def test_ollama_cloud_ssh_key_warning():
+    """SSH-ключ сразу помечается предупреждением."""
+    from gmod.infrastructure.llm.ollama_provider import OllamaCloudProvider
+    p = OllamaCloudProvider(api_key="ssh-rsa AAAA",
+                            config={"url": "https://ollama.com/v1"})
+    status = p.validate_credentials()
+    assert status.ok is False
+    assert status.reason == "bad_key"
+    assert "SSH" in status.message
+
+
+def test_ollama_cloud_native_endpoints():
+    """Нативный транспорт бьёт в /api/tags и /api/chat с Bearer."""
+    from gmod.infrastructure.llm.ollama_provider import OllamaCloudProvider
+    p = OllamaCloudProvider(api_key="k", config={"url": "https://ollama.com/api"})
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"models": [{"name": "gemma4:31b"}]}
+    with patch("requests.get", return_value=mock_resp) as mg:
+        assert p.list_models() == ["gemma4:31b"]
+    assert mg.call_args[0][0] == "https://ollama.com/api/tags"
+    assert mg.call_args[1]["headers"] == {"Authorization": "Bearer k"}
+
+
 def test_ollama_cloud_model_listing_with_key():
     """ТЗ §3.3: листинг моделей Ollama Cloud ПЕРЕДАЁТ API-key."""
     from gmod.infrastructure.llm.ollama_provider import OllamaCloudProvider

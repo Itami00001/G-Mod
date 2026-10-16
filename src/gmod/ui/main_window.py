@@ -3847,7 +3847,7 @@ class MainWindow(QMainWindow):
                 url = QLineEdit(settings.ollama_url if pname == "ollama_local"
                                 else settings.ollama_cloud_url)
                 url.setPlaceholderText("http://localhost:11434" if pname == "ollama_local"
-                                       else "https://ollama.com")
+                                       else "https://ollama.com/v1 (/api — нативный)")
                 url.setToolTip("URL сервера. Модели выбираются на странице «Модели» (кнопка 🔄).")
                 url_row.addWidget(url, 1)
                 form.addRow("URL сервера:", url_row)
@@ -3865,6 +3865,11 @@ class MainWindow(QMainWindow):
                     form.addRow("API-ключ:", key)
                     entry["api_key"] = key
                     form.addRow(self._make_credential_row(pname, key, tab))
+                    save_hint = QLabel("Введите ключ и нажмите «Сохранить» внизу — "
+                                       "проверка берёт сохранённый ключ.")
+                    save_hint.setStyleSheet("color: gray; font-size: 11px;")
+                    save_hint.setWordWrap(True)
+                    form.addRow(save_hint)
             else:
                 key = QLineEdit(_keys[pname])
                 key.setEchoMode(QLineEdit.Password)
@@ -4304,7 +4309,7 @@ class MainWindow(QMainWindow):
                         item["model"] = W["ollama_local_model"].currentText().strip() \
                             or "llama3.2:3b"
                     elif pname == "ollama_cloud":
-                        item["url"] = entry["url"].text().strip() or "https://ollama.com"
+                        item["url"] = entry["url"].text().strip() or DEFAULT_OLLAMA_CLOUD_URL
                         item["model"] = W["ollama_cloud_model"].currentText().strip() \
                             or "llama3.2:3b"
                     elif pname == "groq":
@@ -4505,6 +4510,9 @@ class MainWindow(QMainWindow):
             detail = status.detail
             if detail:
                 lines.append(f"Детали: {detail}")
+            if status.reason == "no_key":
+                lines.append("Подсказка: введите ключ в поле выше и нажмите "
+                             "«Сохранить» внизу — проверка берёт сохранённый ключ.")
             # Цветной индикатор рядом с кнопкой проверки.
             try:
                 from gmod.infrastructure.llm.health import REASON_COLORS
