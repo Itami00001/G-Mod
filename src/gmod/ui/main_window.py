@@ -4792,6 +4792,9 @@ class MainWindow(QMainWindow):
         if action in ("already_loaded", "same_url_loaded"):
             # ТЗ §4.3: повторный clone запрещён. Показываем ЧТО именно
             # заблокировало загрузку, чтобы не было ощущения тупика.
+            # Yes = реально открыть/выбрать этот репозиторий (а не просто фокус):
+            # после сброса current_repo_id пуст, и фокус без загрузки
+            # выглядел как «ничего не происходит».
             blocker = decision.get("path", "") or current_id or "?"
             try:
                 saved_url = self.db.load_workspace_state(
@@ -4809,7 +4812,15 @@ class MainWindow(QMainWindow):
                 "Открыть существующий?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
             if reply == QMessageBox.Yes:
-                self._focus_repo_files()
+                try:
+                    if blocker and Path(blocker).exists():
+                        self._switch_to_repo({"path": blocker,
+                                              "url": saved_url or url_text})
+                    else:
+                        self._focus_repo_files()
+                except Exception as e:
+                    logger.warning("open existing failed: %s", e)
+                    self._focus_repo_files()
             return
 
         if action == "other_git":
