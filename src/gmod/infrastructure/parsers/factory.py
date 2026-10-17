@@ -8,19 +8,18 @@ from gmod.domain.entities import CodeUnit
 from gmod.domain.interfaces import ILanguageParser
 from gmod.infrastructure.parsers.base import BaseLanguageParser
 from gmod.infrastructure.parsers.python_parser import PythonParser
+from gmod.infrastructure.parsers.javascript_parser import JavaScriptParser
 
 logger = logging.getLogger(__name__)
 
 
 class ParserFactory:
     """Фабрика для создания парсеров языков."""
-    
+
     _parsers: Dict[str, Type[BaseLanguageParser]] = {
         "python": PythonParser,
-        # Другие парсеры могут быть добавлены здесь:
-        # "javascript": JavaScriptParser,
-        # "typescript": TypeScriptParser,
-        # "java": JavaParser,
+        "javascript": JavaScriptParser,
+        "typescript": JavaScriptParser,
     }
     
     @classmethod
@@ -90,7 +89,11 @@ class ParserFactory:
         language_map = {
             ".py": "python",
             ".js": "javascript",
+            ".jsx": "javascript",
+            ".mjs": "javascript",
+            ".cjs": "javascript",
             ".ts": "typescript",
+            ".tsx": "typescript",
             ".java": "java",
             ".cpp": "cpp",
             ".c": "c",

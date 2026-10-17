@@ -73,12 +73,13 @@ class ExitPointCount(BaseMetric):
         """Вычисление количества точек выхода."""
         content = unit.content
         
-        # Подсчёт return, break, continue
+        # Подсчёт return, break, continue, throw
         return_count = len(re.findall(r'\breturn\b', content))
         break_count = len(re.findall(r'\bbreak\b', content))
         continue_count = len(re.findall(r'\bcontinue\b', content))
+        throw_count = len(re.findall(r'\bthrow\b', content))
         
-        return float(return_count + break_count + continue_count)
+        return float(return_count + break_count + continue_count + throw_count)
 
 
 class NestingDepth(BaseMetric):
@@ -94,13 +95,13 @@ class NestingDepth(BaseMetric):
             stripped = line.strip()
             
             # Увеличиваем глубину
-            if any(keyword in stripped for keyword in ['if', 'elif', 'else', 'for', 'while', 'try', 'except', 'with', 'def', 'class']):
+            if any(keyword in stripped for keyword in ['if', 'elif', 'else', 'for', 'while', 'try', 'except', 'catch', 'with', 'def', 'class']):
                 if 'else' not in stripped or 'if' in stripped:
                     current_depth += 1
                     max_depth = max(max_depth, current_depth)
             
             # Уменьшаем глубину
-            if stripped in ['else:', 'except', 'finally:']:
+            if stripped in ['else:', 'except', 'finally:', 'catch']:
                 current_depth -= 1
         
         return float(max_depth)

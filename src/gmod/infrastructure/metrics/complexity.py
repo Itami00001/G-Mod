@@ -19,6 +19,8 @@ class CyclomaticComplexity(BaseMetric):
         complexity = 1  # Базовая сложность
         
         # Ключевые слова, увеличивающие сложность
+        # (+ JS-варианты: catch вместо except, && / || вместо and / or —
+        # в валидном Python-коде их нет, на Python-результат не влияет)
         complexity_keywords = [
             r'\bif\b',
             r'\belif\b',
@@ -27,10 +29,13 @@ class CyclomaticComplexity(BaseMetric):
             r'\bwhile\b',
             r'\btry\b',
             r'\bexcept\b',
+            r'\bcatch\b',
             r'\bfinally\b',
             r'\bwith\b',
             r'\band\b',
             r'\bor\b',
+            r'&&',
+            r'\|\|',
             r'\?|:',  # Тернарный оператор
         ]
         
@@ -59,18 +64,18 @@ class CognitiveComplexity(BaseMetric):
             stripped = line.strip()
             
             # Увеличиваем вложенность
-            if any(keyword in stripped for keyword in ['if', 'elif', 'else', 'for', 'while', 'try', 'except', 'with']):
+            if any(keyword in stripped for keyword in ['if', 'elif', 'else', 'for', 'while', 'try', 'except', 'catch', 'with']):
                 if 'else' not in stripped or 'if' in stripped:  # else без if не увеличивает
                     nesting_level += 1
                     complexity += nesting_level
             
             # Уменьшаем вложенность
-            if stripped in ['else:', 'except', 'finally:']:
+            if stripped in ['else:', 'except', 'finally:', 'catch']:
                 nesting_level -= 1
             
-            # Логические операторы
-            and_count = stripped.count(' and ')
-            or_count = stripped.count(' or ')
+            # Логические операторы (Python and/or + JS && / ||)
+            and_count = stripped.count(' and ') + stripped.count('&&')
+            or_count = stripped.count(' or ') + stripped.count('||')
             complexity += (and_count + or_count) * (nesting_level + 1)
         
         return float(complexity)
@@ -89,13 +94,14 @@ class NPathComplexity(BaseMetric):
         for_count = len(re.findall(r'\bfor\b', content))
         while_count = len(re.findall(r'\bwhile\b', content))
         case_count = len(re.findall(r'\bcase\b', content))
+        catch_count = len(re.findall(r'\bcatch\b', content))
         
         # Каждое условие умножает количество путей на 2
-        npath *= (2 ** (if_count + for_count + while_count + case_count))
+        npath *= (2 ** (if_count + for_count + while_count + case_count + catch_count))
         
         # Логические операторы увеличивают сложность
-        and_count = content.count(' and ')
-        or_count = content.count(' or ')
+        and_count = content.count(' and ') + content.count('&&')
+        or_count = content.count(' or ') + content.count('||')
         npath *= (and_count + or_count + 1)
         
         return float(npath)
