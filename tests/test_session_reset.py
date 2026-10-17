@@ -249,3 +249,63 @@ def test_restore_session_roundtrip(tmp_path, tmp_db, monkeypatch):
         w.close()
     finally:
         dbm._db_instance = old_singleton
+
+
+def _make_repo_with(path: Path, files: dict):
+    """Git-репозиторий с произвольным набором файлов {rel: content}."""
+    import git
+    path.mkdir(parents=True, exist_ok=True)
+    repo = git.Repo.init(path)
+    rels = []
+    for rel, content in files.items():
+        p = path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        rels.append(rel)
+    repo.index.add(rels)
+    repo.index.commit("init")
+    return repo
+
+
+def test_switch_python_to_js_recomputes_metrics(tmp_path, tmp_db, monkeypatch):
+    """Регрессия: после смены репозитория метрики считаются для нового
+    (в т.ч. JS-репозитория), а не остаются пустыми."""
+    app, w, old_singleton, dbm = _make_window(tmp_db, monkeypatch)
+    try:
+        py = tmp_path / "pylib"
+        js = tmp_path / "jslib"
+        _make_repo_with(py, {"a.py": "def fa():\n    if True:\n        return 1\n"})
+        _make_repo_with(js, {"a.js": "export function fb(x) {\n"
+                                    "  if (x) return 1;\n"
+                                    "  return 0;\n}\n"})
+
+        w._switch_to_repo({"path": str(py), "url": ""})
+        app.processEvents()
+        assert w._get_current_repo_id() == "pylib"
+        assert w.metrics_model.rowCount() > 0
+
+        w._switch_to_repo({"path": str(js), "url": ""})
+        app.processEvents()
+        assert w._get_current_repo_id() == "jslib"
+        assert w.metrics_model.rowCount() > 0, w.metrics_status.text()
+        w.close()
+    finally:
+        dbm._db_instance = old_singleton
+
+
+def test_switch_unsupported_repo_reports_reason(tmp_path, tmp_db, monkeypatch):
+    """Если в репозитории нет поддерживаемых языков, статус объясняет
+    причину, а не показывает молчаливое «0 метрик»."""
+    app, w, old_singleton, dbm = _make_window(tmp_db, monkeypatch)
+    try:
+        odd = tmp_path / "odd"
+        _make_repo_with(odd, {"data.bin": "x", "notes.custom": "y"})
+        w._switch_to_repo({"path": str(odd), "url": ""})
+        app.processEvents()
+        assert w._get_current_repo_id() == "odd"
+        assert w.metrics_model.rowCount() == 0
+        assert "рассчитать" in w.metrics_status.text()
+        w.close()
+    finally:
+        dbm._db_instance = old_singleton
+

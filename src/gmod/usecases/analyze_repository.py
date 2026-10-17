@@ -396,10 +396,22 @@ class AnalyzeRepositoryUseCase:
             "function_table": [],
         }
         if not files:
-            results["message"] = "Нет поддерживаемых файлов в выбранных путях"
+            # Понятная причина вместо «0 метрик»: показываем, какие
+            # расширения вообще есть в репозитории и что мы поддерживаем.
+            exts = {}
+            for f in repo_root.rglob("*"):
+                if f.is_file() and ".git" not in f.parts:
+                    exts[f.suffix.lower() or "(без расширения)"] = \
+                        exts.get(f.suffix.lower() or "(без расширения)", 0) + 1
+            found = ", ".join(f"{e} x{c}" for e, c in
+                              sorted(exts.items(), key=lambda kv: -kv[1])[:12])
+            supported = sorted({"." + p for p in
+                                self.parser_factory.get_supported_languages()})
+            results["message"] = (
+                "В репозитории нет файлов поддерживаемых языков. "
+                f"Найдено: {found or '—'}. "
+                f"Поддерживаются: {', '.join(supported) or 'нет'}.")
             return results
-
-        commits = self.git_parser.get_commits(repository.id, limit=100)
 
         for file_path in files:
             try:
@@ -434,6 +446,12 @@ class AnalyzeRepositoryUseCase:
             "[PATHS] Готово: файлов=%d единиц=%d метрик=%d",
             results["files_analyzed"], results["units_analyzed"], results["metrics_computed"],
         )
+        if results["metrics_computed"] == 0:
+            results["status"] = "error"
+            results["message"] = (
+                "Поддерживаемые файлы найдены, но в них нет функций/классов "
+                "для расчёта метрик (например, только точка входа и "
+                "шаблоны).")
         return results
 
     def get_function_metrics_table(self, repo_id: str,

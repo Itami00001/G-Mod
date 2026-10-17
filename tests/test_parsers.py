@@ -84,6 +84,8 @@ def test_parser_factory_detect_language():
     """Тест определения языка по расширению."""
     assert ParserFactory.detect_language(Path("test.py")) == "python"
     assert ParserFactory.detect_language(Path("test.js")) == "javascript"
+    assert ParserFactory.detect_language(Path("test.ts")) == "typescript"
+    assert ParserFactory.detect_language(Path("test.vue")) == "vue"
     assert ParserFactory.detect_language(Path("test.java")) == "java"
     assert ParserFactory.detect_language(Path("test.txt")) == "unknown"
 
@@ -98,3 +100,45 @@ def example():
     units = ParserFactory.parse_file(file_path, content, "python")
     
     assert len(units) > 0
+
+
+def test_javascript_parser_functions_and_classes():
+    """JS-парсер находит функции/классы (регрессия: JS-репо давали 0 метрик)."""
+    content = (
+        "export function greet(name) {\n"
+        "  if (!name) return 'hi';\n"
+        "  return 'hi ' + name;\n"
+        "}\n"
+        "export default class Widget {\n"
+        "  render() { return 1; }\n"
+        "}\n"
+    )
+    units = ParserFactory.parse_file(Path("app.js"), content, "javascript")
+    names = {(u.unit_type, u.name) for u in units}
+    assert ("function", "greet") in names
+    assert ("class", "Widget") in names
+
+
+def test_vue_parser_extracts_script_block():
+    """Vue SFC: функции извлекаются из <script>, язык = vue."""
+    content = (
+        "<template>\n  <div/>\n</template>\n"
+        "<script>\n"
+        "export default {\n"
+        "  methods: {\n"
+        "    save() {\n"
+        "      return 1;\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+        "function helper() { return 2; }\n"
+        "</script>\n"
+    )
+    units = ParserFactory.parse_file(Path("App.vue"), content, "vue")
+    assert any(u.name == "save" for u in units)
+    assert any(u.unit_type == "function" and u.name == "helper" for u in units)
+    assert all(u.language == "vue" for u in units)
+    # Строки сдвинуты в координаты исходного файла (script начинается не с 1).
+    helper = next(u for u in units if u.name == "helper")
+    assert helper.start_line > 3
+

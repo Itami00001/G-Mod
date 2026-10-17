@@ -9,6 +9,7 @@ from gmod.domain.interfaces import ILanguageParser
 from gmod.infrastructure.parsers.base import BaseLanguageParser
 from gmod.infrastructure.parsers.python_parser import PythonParser
 from gmod.infrastructure.parsers.javascript_parser import JavaScriptParser
+from gmod.infrastructure.parsers.vue_parser import VueParser
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class ParserFactory:
         "python": PythonParser,
         "javascript": JavaScriptParser,
         "typescript": JavaScriptParser,
+        "vue": VueParser,
     }
     
     @classmethod
@@ -94,6 +96,7 @@ class ParserFactory:
             ".cjs": "javascript",
             ".ts": "typescript",
             ".tsx": "typescript",
+            ".vue": "vue",
             ".java": "java",
             ".cpp": "cpp",
             ".c": "c",

@@ -1093,21 +1093,28 @@ class MainWindow(QMainWindow):
                 result = usecase.analyze_paths(repo, commit_hash, ["."])
 
             if result.get('status') == 'success' and result.get('metrics_computed', 0) > 0:
-                msg = ('Метрики рассчитаны: {0} файлов, {1} единиц, {2} метрик'.format(
-                    result['files_analyzed'], result['units_analyzed'], result['metrics_computed']))
-                self.metrics_status.setText(msg)
-                self.status_bar.showMessage(msg)
-                logger.info("Метрики: %s", msg)
+                status_text = ('Метрики рассчитаны: {0} файлов, {1} единиц, '
+                               '{2} метрик'.format(
+                                   result['files_analyzed'],
+                                   result['units_analyzed'],
+                                   result['metrics_computed']))
+                logger.info("Метрики: %s", status_text)
             else:
                 err = result.get('message', 'нет данных')
                 if result.get('errors'):
                     err = "; ".join(str(x) for x in result['errors'][:3])
-                self.metrics_status.setText(f'Метрики не получилось рассчитать: {err}')
-                self.status_bar.showMessage("Метрики не получилось рассчитать")
+                status_text = f'Метрики не получилось рассчитать: {err}'
                 logger.warning("Метрики не рассчитаны: %s", err)
 
-            # Обновляем таблицу метрик
+            # Таблицу обновляем ДО установки статуса: _refresh_metrics()
+            # пишет свой «Загружено метрик: N» и иначе затирал бы причину
+            # ошибки, из-за чего провал анализа выглядел как «0 метрик».
             self._refresh_metrics()
+            self.metrics_status.setText(status_text)
+            if result.get('status') == 'success' and result.get('metrics_computed', 0) > 0:
+                self.status_bar.showMessage(status_text)
+            else:
+                self.status_bar.showMessage("Метрики не получилось рассчитать")
 
         except Exception as e:
             logger.error(f"Error running analysis: {e}", exc_info=True)
@@ -5122,7 +5129,8 @@ class MainWindow(QMainWindow):
             try:
                 for p in sorted(repo_path.rglob("*")):
                     if p.is_file() and p.suffix.lower() in (
-                        ".py", ".js", ".ts", ".java", ".md", ".toml", ".yaml", ".yml",
+                        ".py", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
+                        ".vue", ".java", ".md", ".toml", ".yaml", ".yml",
                         ".json", ".txt", ".cfg", ".ini", ".xml", ".html", ".css",
                     ):
                         try:
