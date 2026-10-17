@@ -1465,7 +1465,8 @@ class MainWindow(QMainWindow):
             # Асинхронно подгружаем реальные модели с сервера
             QTimer.singleShot(0, self._fetch_ollama_local_models_for_chat)
         elif provider_name == "Ollama Cloud":
-            candidates += ["llama3.2:3b", "llama3.1:8b"]
+            # Проверено живым API: gemma4:31b, gpt-oss:20b/120b и др.
+            candidates += ["gemma4:31b", "gpt-oss:20b", "gpt-oss:120b"]
             QTimer.singleShot(0, self._fetch_ollama_cloud_models_for_chat)
         elif provider_name == "Groq":
             candidates += ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
@@ -4290,6 +4291,7 @@ class MainWindow(QMainWindow):
                     _cs = None
                 ordered = sorted(W["prov"].items(), key=lambda kv: kv[1]["order"].value())
                 providers = []
+                key_errors = []
                 for pname, entry in ordered:
                     item = {"name": pname, "enabled": entry["enabled"].isChecked()}
                     key_widget = entry.get("api_key")
@@ -4302,8 +4304,12 @@ class MainWindow(QMainWindow):
                                 _cs.set_key(pname, raw_key)
                             else:
                                 _cs.delete_key(pname)
+                            # Verify-on-save: перечитываем, молча ключи не теряем.
+                            if _cs.get_key(pname) != raw_key:
+                                raise RuntimeError("ключ не читается обратно из хранилища")
                         except Exception as e:
-                            logger.warning("credential save %s: %s", pname, e)
+                            logger.error("credential save %s: %s", pname, e)
+                            key_errors.append(pname)
                     item["api_key"] = ""
                     if pname == "ollama_local":
                         item["url"] = entry["url"].text().strip() or "http://localhost:11434"
@@ -4312,7 +4318,7 @@ class MainWindow(QMainWindow):
                     elif pname == "ollama_cloud":
                         item["url"] = entry["url"].text().strip() or DEFAULT_OLLAMA_CLOUD_URL
                         item["model"] = W["ollama_cloud_model"].currentText().strip() \
-                            or "llama3.2:3b"
+                            or "gemma4:31b"
                     elif pname == "groq":
                         item["model"] = W["groq_model"].currentText().strip() or "openai/gpt-oss-20b"
                     elif pname == "gemini":
@@ -4389,7 +4395,15 @@ class MainWindow(QMainWindow):
                     self._load_llm_settings()
                 except Exception:
                     pass
-                self.status_bar.showMessage("Настройки сохранены (config.yaml + SQLite)")
+                if key_errors:
+                    msg = ("Настройки сохранены, НО ключи не записались "
+                           f"в защищённое хранилище: {', '.join(key_errors)}. "
+                           "Проверки этих провайдеров будут жаловаться на ключ.")
+                    self.status_bar.showMessage(msg)
+                    QMessageBox.warning(tab, "Ключи не сохранены", msg)
+                    logger.error("credential save failed for: %s", key_errors)
+                else:
+                    self.status_bar.showMessage("Настройки сохранены (config.yaml + SQLite)")
             except Exception as e:
                 logger.error(f"Error saving settings: {e}")
                 QMessageBox.critical(tab, "Ошибка", f"Не удалось сохранить: {e}")
@@ -4476,17 +4490,76 @@ class MainWindow(QMainWindow):
         logger.info("credential %s удалён пользователем", account)
 
     def _test_provider_inference(self, provider_name: str, parent) -> None:
-        """Явный тестовый inference (ТЗ §6: отдельная операция, тратит токены)."""
+        """Явный тестовый inference (ТЗ §6: отдельная операция, тратит токены).
+
+        Берёт значения с экрана (включая несохранённый ключ).
+        """
         from PySide6.QtWidgets import QMessageBox
         try:
-            from gmod.services.llm_service import LLMService
-            answer = LLMService().test_inference(provider_name)
+            from gmod.infrastructure.llm.factory import build_provider
+            provider = build_provider(provider_name,
+                                      self._provider_entry_live(provider_name))
+            if provider is None:
+                QMessageBox.warning(parent, "Тестовый inference",
+                                    f"Неизвестный провайдер: {provider_name}")
+                return
+            answer = provider.test_inference()
             QMessageBox.information(parent, "Тестовый inference",
                                     f"{provider_name} OK, ответ модели:\n{answer[:600]}")
         except Exception as e:
             from gmod.infrastructure.llm.health import classify_exception
             _reason, msg = classify_exception(e)
             QMessageBox.warning(parent, "Тестовый inference", f"{msg}\n{e}"[:700])
+
+    def _provider_entry_live(self, provider_name: str) -> dict:
+        """Entry провайдера: сохранённые настройки + несохранённые поля с экрана.
+
+        Убирает ловушку «ввёл ключ, нажал Проверить, а ключ ещё не сохранён»:
+        проверка берёт то, что прямо сейчас в полях вкладки настроек.
+        """
+        from gmod.infrastructure.llm.factory import provider_entry_from_settings
+        entry = provider_entry_from_settings(provider_name)
+        try:
+            widgets = getattr(self, "_settings_W", {}).get("prov", {}).get(
+                provider_name, {})
+            url_widget = widgets.get("url")
+            if url_widget is not None and hasattr(url_widget, "text"):
+                text = url_widget.text().strip()
+                if text:
+                    entry["url"] = text
+            key_widget = widgets.get("api_key")
+            if key_widget is not None and hasattr(key_widget, "text"):
+                # Пустое поле здесь НЕ удаляет ключ — только подменяет
+                # для проверки; удаление — через «Удалить» + «Сохранить».
+                text = key_widget.text().strip()
+                if text:
+                    entry["api_key"] = text
+            combo = widgets.get("model_combo")
+            if combo is not None:
+                try:
+                    text = combo.currentText().strip()
+                    if text:
+                        entry["model"] = text
+                except Exception:
+                    pass
+            else:
+                models_key = {"groq": "groq_model", "gemini": "gemini_model",
+                              "openai": "openai_model",
+                              "anthropic": "anthropic_model",
+                              "ollama_local": "ollama_local_model",
+                              "ollama_cloud": "ollama_cloud_model"}.get(provider_name)
+                if models_key:
+                    try:
+                        combo2 = getattr(self, "_settings_W", {}).get(models_key)
+                        if combo2 is not None:
+                            text = combo2.currentText().strip()
+                            if text:
+                                entry["model"] = text
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug("live entry override: %s", e)
+        return entry
 
     def _check_provider_connection(self, provider_name: str, parent) -> None:
         """Проверка соединения БЕЗ generation prompt + тестовый inference.
@@ -4497,11 +4570,9 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QMessageBox
 
         try:
-            from gmod.infrastructure.llm.factory import (
-                build_provider, provider_entry_from_settings,
-            )
+            from gmod.infrastructure.llm.factory import build_provider
             provider = build_provider(provider_name,
-                                      provider_entry_from_settings(provider_name))
+                                      self._provider_entry_live(provider_name))
             if provider is None:
                 QMessageBox.warning(parent, "Проверка соединения",
                                     f"Неизвестный провайдер: {provider_name}")
@@ -4512,8 +4583,9 @@ class MainWindow(QMainWindow):
             if detail:
                 lines.append(f"Детали: {detail}")
             if status.reason == "no_key":
-                lines.append("Подсказка: введите ключ в поле выше и нажмите "
-                             "«Сохранить» внизу — проверка берёт сохранённый ключ.")
+                lines.append("Подсказка: поле API-ключа пустое. Введите ключ "
+                             "(для Cloud — Bearer с сайта, не SSH) и нажмите "
+                             "«Сохранить» внизу, чтобы ключ остался.")
             # Цветной индикатор рядом с кнопкой проверки.
             try:
                 from gmod.infrastructure.llm.health import REASON_COLORS
@@ -4565,11 +4637,21 @@ class MainWindow(QMainWindow):
             entry = {"name": provider_name, "enabled": True,
                      "url": url, "model": ""}
             if provider_name == "ollama_cloud":
+                # Ключ прямо с экрана (включая несохранённый).
                 try:
-                    from gmod.config.settings import get_settings
-                    entry["api_key"] = get_settings().ollama_cloud_api_key
+                    key_widget = self._settings_W.get("prov", {}).get(
+                        "ollama_cloud", {}).get("api_key")
+                    live_key = key_widget.text().strip() \
+                        if key_widget is not None and hasattr(key_widget, "text") else ""
                 except Exception:
-                    entry["api_key"] = ""
+                    live_key = ""
+                if not live_key:
+                    try:
+                        from gmod.config.settings import get_settings
+                        live_key = get_settings().ollama_cloud_api_key
+                    except Exception:
+                        live_key = ""
+                entry["api_key"] = live_key
             provider = build_provider(provider_name, entry)
             if provider is None:
                 return

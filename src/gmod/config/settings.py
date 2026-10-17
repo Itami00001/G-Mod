@@ -363,14 +363,28 @@ class Settings:
             providers.append(entry)
 
         # Новые провайдеры, которых нет в YAML: добавляем, enabled = есть ключ.
+        # Ollama: обе половины (local всегда включён — сервер может быть рядом).
         for name, model, extra in (
+            ("ollama_local", DEFAULT_OLLAMA_MODEL,
+             {"url": DEFAULT_OLLAMA_URL}),
             ("openai", "gpt-4o-mini", {"url": "https://api.openai.com/v1"}),
             ("anthropic", "claude-sonnet-4-20250514", {}),
         ):
             if name not in seen:
+                if name == "ollama_local":
+                    providers.append({"name": name, "enabled": True,
+                                      "model": model, "api_key": "", **extra})
+                    continue
                 key = _key(name, "")
                 providers.append({"name": name, "enabled": bool(key),
                                   "model": model, "api_key": key, **extra})
+        if "ollama_cloud" not in seen:
+            key = _key("ollama_cloud", "")
+            providers.append({"name": "ollama_cloud",
+                              "enabled": bool(key),
+                              "model": DEFAULT_OLLAMA_CLOUD_MODEL,
+                              "url": DEFAULT_OLLAMA_CLOUD_URL,
+                              "api_key": key})
 
         return {
             "llm": {

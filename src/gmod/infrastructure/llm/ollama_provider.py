@@ -441,7 +441,8 @@ class OllamaCloudProvider(BaseLLMProvider):
     def test_inference(self, prompt: str = "Ответь одним словом: тест.") -> str:
         """Явный тестовый inference (отдельная операция)."""
         logger.info("Ollama Cloud: тестовый inference (модель %s)", self.model)
-        return self.generate(prompt, max_tokens=50, temperature=0.0)
+        # 200 токенов: reasoning-моделям (gpt-oss) мало 50 — вернут пустоту.
+        return self.generate(prompt, max_tokens=200, temperature=0.0)
 
     def is_available(self) -> bool:
         try:
